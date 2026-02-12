@@ -1,0 +1,15 @@
+{
+	"actorSpecification": 1,
+	"name": "indeed-scraper",
+	"title": "Standby Actor in TypeScript",
+	"description": "Standby Actor in TypeScript.",
+	"version": "0.0",
+	"buildTag": "latest",
+	"usesStandbyMode": false,
+	"meta": {
+		"templateId": "ts-standby",
+		"generatedBy": "<FILL-IN-MODEL>"
+	},
+	"dockerfile": "../Dockerfile",
+	"input": "./input_schema.json"
+}

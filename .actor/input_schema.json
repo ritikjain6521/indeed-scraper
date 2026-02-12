@@ -1,0 +1,73 @@
+{
+    "title": "Input Schema",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "position": {
+            "title": "Job Position",
+            "type": "string",
+            "description": "Job position to search for",
+            "editor": "textfield"
+        },
+        "location": {
+            "title": "Location",
+            "type": "string",
+            "description": "Location to search in",
+            "editor": "textfield"
+        },
+        "country": {
+            "title": "Country",
+            "type": "string",
+            "description": "Country to search in (e.g., US, IN, UK)",
+            "editor": "select",
+            "default": "US",
+            "enum": [
+                "US",
+                "IN",
+                "GB",
+                "CA",
+                "AU"
+            ]
+        },
+        "maxItems": {
+            "title": "Max Items",
+            "type": "integer",
+            "description": "Maximum number of items to scrape",
+            "default": 1000
+        },
+        "resetSeenKeys": {
+            "title": "Reset Seen Keys",
+            "type": "boolean",
+            "description": "If true, the internal memory of already scraped jobs will be cleared for this run.",
+            "default": false
+        },
+        "proxyConfiguration": {
+            "title": "Proxy Configuration",
+            "type": "object",
+            "description": "Proxy settings. RESIDENTIAL is highly recommended for Indeed.",
+            "editor": "proxy",
+            "default": {
+                "useApifyProxy": true,
+                "apifyProxyGroups": [
+                    "RESIDENTIAL"
+                ]
+            }
+        },
+        "bulkQueries": {
+            "title": "Bulk Searches",
+            "type": "array",
+            "description": "Multiple search queries in one run",
+            "editor": "json"
+        },
+        "maxConcurrency": {
+            "title": "Max Concurrency",
+            "type": "integer",
+            "description": "Maximum number of pages processed at once. Cheerio can handle 10-50 safely.",
+            "default": 10,
+            "minimum": 1
+        }
+    },
+    "required": [
+        "country"
+    ]
+}
