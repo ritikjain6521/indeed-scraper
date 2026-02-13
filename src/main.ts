@@ -95,6 +95,7 @@ let scrapedCompanyCount = 0;
 const seenCompanies = new Set<string>();
 
 const requestQueue = await RequestQueue.open();
+let enqueuedCount = 0;
 
 // Helper to build URL
 const buildUrl = (q: string, l: string = '', start: number = 0) => {
@@ -115,6 +116,7 @@ const enqueueSearch = async (q: string, l: string) => {
         url,
         userData: { label: 'START', page: 0, startUrl: url, sessionKey, q, l }
     });
+    enqueuedCount++;
 
     // Expansion: If user wants >1000 jobs and searching "Remote" in US, iterate through states
     // This bypasses the Indeed 1000-job-per-query limit
@@ -127,6 +129,7 @@ const enqueueSearch = async (q: string, l: string) => {
                 url: stateUrl,
                 userData: { label: 'START', page: 0, startUrl: stateUrl, sessionKey: stateSessionKey, q, l: stateCode }
             });
+            enqueuedCount++;
         }
     }
 };
@@ -140,6 +143,7 @@ if (input.startUrls && Array.isArray(input.startUrls)) {
             url,
             userData: { label: 'START', page: 0, startUrl: url }
         });
+        enqueuedCount++;
     }
 }
 
@@ -152,6 +156,7 @@ if (input.companyUrls && Array.isArray(input.companyUrls)) {
             url,
             userData: { label: 'START', page: 0, startUrl: url }
         });
+        enqueuedCount++;
     }
 }
 
@@ -179,7 +184,7 @@ if (input.bulkQueries && Array.isArray(input.bulkQueries)) {
 
 // Validation: Stop if no requests enqueued
 const queueInfo = await requestQueue.getInfo();
-if (queueInfo?.totalRequestCount === 0) {
+if (enqueuedCount === 0 && queueInfo?.totalRequestCount === 0) {
     const errorMsg = 'No search queries, company names, or start URLs provided. Nothing to scrape.';
     log.error(errorMsg);
     await Actor.exit(errorMsg);
@@ -391,15 +396,31 @@ const crawler = new CheerioCrawler({
 
                                             // Enqueue company details if requested
                                             if (scrapeCompanyDetails) {
-                                                const companySlug = job.companyName?.replace(/\s+/g, '-');
-                                                const companyUrl = `${baseUrl}/cmp/${companySlug}`;
-                                                if (companySlug && !seenCompanies.has(companyUrl)) {
-                                                    if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
-                                                        seenCompanies.add(companyUrl);
-                                                        await crawler.addRequests([{
-                                                            url: companyUrl,
-                                                            userData: { label: 'COMPANY_DETAIL' }
-                                                        }]);
+                                                let companyUrl = job.companyOverviewLink || job.companyRelativeUrl || job.company?.overviewUrl;
+
+                                                // Fallback to constructing from name if no link provided
+                                                if (!companyUrl && job.companyName) {
+                                                    const companySlug = job.companyName.replace(/\s+/g, '-');
+                                                    companyUrl = `/cmp/${companySlug}`;
+                                                }
+
+                                                if (companyUrl) {
+                                                    // Ensure absolute URL
+                                                    if (!companyUrl.startsWith('http')) {
+                                                        companyUrl = `${baseUrl}${companyUrl.startsWith('/') ? '' : '/'}${companyUrl}`;
+                                                    }
+
+                                                    if (!seenCompanies.has(companyUrl)) {
+                                                        if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
+                                                            seenCompanies.add(companyUrl);
+                                                            log.info(`Enqueuing company details (JSON): ${companyUrl}`);
+                                                            await crawler.addRequests([{
+                                                                url: companyUrl,
+                                                                userData: { label: 'COMPANY_DETAIL' }
+                                                            }]);
+                                                        } else {
+                                                            log.info(`Max company pages reached. Skipping: ${companyUrl}`);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -454,18 +475,40 @@ const crawler = new CheerioCrawler({
 
                     // Enqueue company details if requested
                     if (scrapeCompanyDetails) {
-                        const companyLink = card.find('[data-testid="company-name"] a, a[data-testid="company-name"]').attr('href');
+                        let companyLink = card.find('[data-testid="company-name"] a, a[data-testid="company-name"]').attr('href');
+
+                        // Fallback 1: Try broader selector
+                        if (!companyLink) {
+                            companyLink = card.find('.companyName a').attr('href');
+                        }
+
+                        // Fallback 2: Construct from company name
+                        if (!companyLink && company) {
+                            // Basic slugification - can be improved if needed
+                            const companySlug = company.replace(/\s+/g, '-');
+                            companyLink = `/cmp/${companySlug}`;
+                        }
+
                         if (companyLink) {
-                            const absoluteCompanyLink = companyLink.startsWith('http') ? companyLink : `${baseUrl}${companyLink}`;
+                            // Ensure valid URL format
+                            const absoluteCompanyLink = companyLink.startsWith('http')
+                                ? companyLink
+                                : `${baseUrl}${companyLink.startsWith('/') ? '' : '/'}${companyLink}`;
+
                             if (!seenCompanies.has(absoluteCompanyLink)) {
                                 if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
                                     seenCompanies.add(absoluteCompanyLink);
+                                    log.info(`Enqueuing company details (HTML): ${absoluteCompanyLink}`);
                                     await crawler.addRequests([{
                                         url: absoluteCompanyLink,
                                         userData: { label: 'COMPANY_DETAIL' }
                                     }]);
+                                } else {
+                                    log.info(`Max company pages reached. Skipping: ${absoluteCompanyLink}`);
                                 }
                             }
+                        } else {
+                            log.warning(`No company link found or constructed in HTML for job: ${company}`);
                         }
                     }
                 } catch (err: any) {
@@ -558,6 +601,8 @@ try {
 } catch (err) {
     log.error('Crawler failed:', { err });
 }
+
+log.info(`[SUMMARY] Finished. Total jobs: ${totalSavedItems}. Total company profiles scraped: ${scrapedCompanyCount}.`);
 
 // Persist results and state
 await Actor.setValue('SEEN_KEYS', Array.from(seenKeys));
