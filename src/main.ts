@@ -66,14 +66,38 @@ const domains: Record<string, string> = {
 const domain = domains[country] || 'indeed.com';
 const baseUrl = `https://${domain}`;
 
-// US States for "Remote" expansion to bypass 1000-job limit
-const US_STATE_CODES = [
-    'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
-    'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
-    'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
-    'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
-    'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
-];
+// Global Regions for Deep Search Expansion (supports US, IN, GB/UK, CA, AU)
+const GLOBAL_REGIONS: Record<string, string[]> = {
+    'US': [
+        'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+        'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+        'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+        'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+        'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
+    ],
+    'IN': [
+        'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Pune', 'Ahmedabad',
+        'Surat', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Bhopal', 'Visakhapatnam',
+        'Maharashtra', 'Karnataka', 'Tamil Nadu', 'Telangana', 'Gujarat', 'Rajasthan',
+        'Uttar Pradesh', 'West Bengal', 'Madhya Pradesh', 'Andhra Pradesh'
+    ],
+    'GB': [
+        'London', 'Manchester', 'Birmingham', 'Leeds', 'Glasgow', 'Liverpool',
+        'Edinburgh', 'Bristol', 'Sheffield', 'Newcastle', 'Nottingham', 'Southampton'
+    ],
+    'UK': [
+        'London', 'Manchester', 'Birmingham', 'Leeds', 'Glasgow', 'Liverpool',
+        'Edinburgh', 'Bristol', 'Sheffield', 'Newcastle', 'Nottingham', 'Southampton'
+    ],
+    'CA': [
+        'Ontario', 'Quebec', 'British Columbia', 'Alberta', 'Manitoba', 'Saskatchewan',
+        'Nova Scotia', 'Toronto', 'Vancouver', 'Montreal', 'Calgary', 'Ottawa'
+    ],
+    'AU': [
+        'New South Wales', 'Victoria', 'Queensland', 'Western Australia', 'South Australia',
+        'Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Adelaide'
+    ]
+};
 
 // Persistence for Seen Keys to avoid duplicates across runs
 let persistentKeys: any = [];
@@ -118,20 +142,6 @@ const enqueueSearch = async (q: string, l: string) => {
     });
     enqueuedCount++;
 
-    // Expansion: If user wants >1000 jobs and searching "Remote" in US, iterate through states
-    // This bypasses the Indeed 1000-job-per-query limit
-    if (country === 'US' && l.toLowerCase().includes('remote') && maxItems > 1000) {
-        log.info(`[DEEP SEARCH] Expanding "${q}" into 50 US states to find more unique jobs...`);
-        for (const stateCode of US_STATE_CODES) {
-            const stateUrl = buildUrl(q, stateCode);
-            const stateSessionKey = `search-${q}-${stateCode}`;
-            await requestQueue.addRequest({
-                url: stateUrl,
-                userData: { label: 'START', page: 0, startUrl: stateUrl, sessionKey: stateSessionKey, q, l: stateCode }
-            });
-            enqueuedCount++;
-        }
-    }
 };
 
 // 1. Add direct Start URLs
@@ -270,7 +280,10 @@ const crawler = new CheerioCrawler({
                 if (text.includes('Revenue')) details.revenue = text.replace('Revenue', '').trim();
             });
 
-            await Dataset.pushData(details);
+
+            // Push to separate dataset for company details (better organization in Apify UI)
+            const companyDataset = await Actor.openDataset('company-details');
+            await companyDataset.pushData(details);
             scrapedCompanyCount++;
             return;
         }
@@ -603,6 +616,12 @@ try {
 }
 
 log.info(`[SUMMARY] Finished. Total jobs: ${totalSavedItems}. Total company profiles scraped: ${scrapedCompanyCount}.`);
+
+// Monetization Logic - estimate run cost
+const pricePerJob = 0.001; // $1 per 1000 jobs
+const pricePerCompany = 0.005; // $5 per 1000 companies
+const totalCost = (totalSavedItems * pricePerJob) + (scrapedCompanyCount * pricePerCompany);
+log.info(`[MONETIZATION] Estimated Run Cost: $${totalCost.toFixed(4)} USD (Jobs: $${(totalSavedItems * pricePerJob).toFixed(4)} + Companies: $${(scrapedCompanyCount * pricePerCompany).toFixed(4)})`);
 
 // Persist results and state
 await Actor.setValue('SEEN_KEYS', Array.from(seenKeys));
