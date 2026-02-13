@@ -1,1 +1,482 @@
-[]
+[
+  {
+    "jobKey": "a5e3836578af67b4",
+    "title": "Backend Engineer (Paid Internship) - Australian Only",
+    "company": "Arcanite",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=a5e3836578af67b4",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.347Z"
+  },
+  {
+    "jobKey": "a1301828044456f1",
+    "title": "Front End Developer",
+    "company": "Bookipi",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=a1301828044456f1",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.361Z"
+  },
+  {
+    "jobKey": "734437b255ee26c1",
+    "title": "Software Engineer – Backend Developer",
+    "company": "ASK SMART PTY LTD",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=734437b255ee26c1",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.374Z"
+  },
+  {
+    "jobKey": "0800e0d60a2f933d",
+    "title": "Senior Full Stack Engineer - Remote AU",
+    "company": "Sitemate",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=0800e0d60a2f933d",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.382Z"
+  },
+  {
+    "jobKey": "86e7a2ef8d9b2993",
+    "title": "3D WebGL Developer",
+    "company": "Situ Systems",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=86e7a2ef8d9b2993",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.393Z"
+  },
+  {
+    "jobKey": "88903204b4314e9f",
+    "title": "Senior Front-End Developer",
+    "company": "Bookipi",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=88903204b4314e9f",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.402Z"
+  },
+  {
+    "jobKey": "cdef0123456789ab",
+    "title": "Senior Front-End Developer",
+    "company": "Bookipi",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=cdef0123456789ab",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.404Z"
+  },
+  {
+    "jobKey": "a718e66ccdc1bfaa",
+    "title": "Senior Full Stack Developer",
+    "company": "Rebilly",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=a718e66ccdc1bfaa",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.405Z"
+  },
+  {
+    "jobKey": "bfd37798470759cd",
+    "title": "Shopify Developer",
+    "company": "Maker Lab",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=bfd37798470759cd",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.414Z"
+  },
+  {
+    "jobKey": "5f575262e7fe24da",
+    "title": "Senior Developer - Unity VR Simulation & Biometric Integration",
+    "company": "XRHealth",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=5f575262e7fe24da",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.426Z"
+  },
+  {
+    "jobKey": "1f42ecf4e0ff04fb",
+    "title": "E-mobility Specialist Software Developer",
+    "company": "Wevolt",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=1f42ecf4e0ff04fb",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.442Z"
+  },
+  {
+    "jobKey": "99c2fb4def9fb3a0",
+    "title": "Senior Apps Developer",
+    "company": "Janison",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=99c2fb4def9fb3a0",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.451Z"
+  },
+  {
+    "jobKey": "e6fd4220b86d8eea",
+    "title": "Principal Full Stack Software Engineer",
+    "company": "Sleek",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=e6fd4220b86d8eea",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.459Z"
+  },
+  {
+    "jobKey": "07d3376d2556a81e",
+    "title": "Senior Software Engineer - Scala (Market Gateway)",
+    "company": "Kraken",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=07d3376d2556a81e",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:00.473Z"
+  },
+  {
+    "jobKey": "f1e2d3c4b5a67890",
+    "title": "Software Engineer – Backend Developer",
+    "company": "ASK SMART PTY LTD",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=f1e2d3c4b5a67890",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:02.306Z"
+  },
+  {
+    "jobKey": "0621c24ffec44c0d",
+    "title": "Mid/Senior Ruby on Rails Engineer",
+    "company": "ShiftCare",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=0621c24ffec44c0d",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:02.307Z"
+  },
+  {
+    "jobKey": "4e1dddb37cac623e",
+    "title": "Graduate Software Engineer",
+    "company": "Elafent",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=4e1dddb37cac623e",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.446Z"
+  },
+  {
+    "jobKey": "9ae45f9ed0b17cc8",
+    "title": "Software Engineer",
+    "company": "Berkeley Research Group, LLC",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=9ae45f9ed0b17cc8",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.489Z"
+  },
+  {
+    "jobKey": "725f756634b41b43",
+    "title": "Quality Assurance Software Engineer",
+    "company": "Bookipi",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=725f756634b41b43",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.510Z"
+  },
+  {
+    "jobKey": "2c1b5a197d63878b",
+    "title": "Junior Full Stack Engineer - Remote AU",
+    "company": "Sitemate",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=2c1b5a197d63878b",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.515Z"
+  },
+  {
+    "jobKey": "b6e855c1f7aafb72",
+    "title": "Mathematics Curriculum Developer for Australian Senior Secondary Courses",
+    "company": "Mathspace",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=b6e855c1f7aafb72",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.516Z"
+  },
+  {
+    "jobKey": "639fe9181218d2a7",
+    "title": "C# Programmer",
+    "company": "Situ Systems",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=639fe9181218d2a7",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.531Z"
+  },
+  {
+    "jobKey": "edc2a10997a6dc8f",
+    "title": "Senior Software Engineer",
+    "company": "Selligent Marketing Cloud",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=edc2a10997a6dc8f",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.535Z"
+  },
+  {
+    "jobKey": "07f348c3adcc785a",
+    "title": "Senior Software Engineer (Shipping Product)",
+    "company": "SKUTOPIA",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=07f348c3adcc785a",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.553Z"
+  },
+  {
+    "jobKey": "11770ef298a90b53",
+    "title": "Software Engineer - Data Orchestration",
+    "company": "Feedzai",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=11770ef298a90b53",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.578Z"
+  },
+  {
+    "jobKey": "99886cad61899f88",
+    "title": "JAVA STACK DEVELOPER",
+    "company": "Gokul Infocare",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=99886cad61899f88",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.597Z"
+  },
+  {
+    "jobKey": "21a38f2cd9a1bf1a",
+    "title": "Expert Software Engineer - Data Orchestration",
+    "company": "Feedzai",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=21a38f2cd9a1bf1a",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.619Z"
+  },
+  {
+    "jobKey": "78969e7130f4fab7",
+    "title": "Principal SRE Engineer",
+    "company": "Sleek",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=78969e7130f4fab7",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.620Z"
+  },
+  {
+    "jobKey": "18d7b9eb4fef93e1",
+    "title": "QA Automation Engineer",
+    "company": "Valsoft Corporation",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=18d7b9eb4fef93e1",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.622Z"
+  },
+  {
+    "jobKey": "f7ab1da44e3bd4ed",
+    "title": "Quality Assurance (QA) Engineer",
+    "company": "Eyes of AI",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=f7ab1da44e3bd4ed",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.640Z"
+  },
+  {
+    "jobKey": "1112aa88fdc194bd",
+    "title": "Senior Full Stack Developer",
+    "company": "Bookipi",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=1112aa88fdc194bd",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.657Z"
+  },
+  {
+    "jobKey": "33a9a313cfd5b4ae",
+    "title": "AI Co-Pilot Full Stack Developer",
+    "company": "Forwood Safety",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=33a9a313cfd5b4ae",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.658Z"
+  },
+  {
+    "jobKey": "e05c43db2072c4c3",
+    "title": "Full Stack Engineer - Remote AU",
+    "company": "Sitemate",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=e05c43db2072c4c3",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.670Z"
+  },
+  {
+    "jobKey": "abcdef0123456789",
+    "title": "Full Stack Engineer - Remote AU",
+    "company": "Sitemate",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=abcdef0123456789",
+    "pageNumber": 1,
+    "scrapedAt": "2026-02-13T17:50:05.671Z"
+  },
+  {
+    "jobKey": "123456789abcdef0",
+    "title": "3D WebGL Developer",
+    "company": "Situ Systems",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=123456789abcdef0",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:12.249Z"
+  },
+  {
+    "jobKey": "3e5fb3a076c24aae",
+    "title": "Senior DevOps Developer (AWS)",
+    "company": "EPAM Systems, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=3e5fb3a076c24aae",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.404Z"
+  },
+  {
+    "jobKey": "fa46f12b5302d982",
+    "title": "Software Maintenance Engineer (Chinese speaking, Middleware, Java, Troubleshooting)",
+    "company": "Red Hat, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=fa46f12b5302d982",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.413Z"
+  },
+  {
+    "jobKey": "231ee755c63c005b",
+    "title": "Senior Site Reliability Engineer, HyperShift (Golang, OpenShift/AWS, Linux)",
+    "company": "Red Hat, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=231ee755c63c005b",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.422Z"
+  },
+  {
+    "jobKey": "574627ac9f5bdd9e",
+    "title": "Online English Writing and Analysis Course Developer - All Levels",
+    "company": "Jadeclass Education",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=574627ac9f5bdd9e",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.423Z"
+  },
+  {
+    "jobKey": "78fa927e580cb154",
+    "title": "Senior Software Maintenance Engineer (Technical Support, Linux, Kubernetes, Mandarin)",
+    "company": "Red Hat, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=78fa927e580cb154",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.431Z"
+  },
+  {
+    "jobKey": "687443ca76e6fec2",
+    "title": "Associate Manager, Site Reliability Engineering",
+    "company": "Red Hat, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=687443ca76e6fec2",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.434Z"
+  },
+  {
+    "jobKey": "bc3834fbe92d4141",
+    "title": "Senior Software Maintenance Engineer (Chinese speaking, Middleware, Java, Troubleshooting)",
+    "company": "Red Hat, Inc.",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=bc3834fbe92d4141",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.436Z"
+  },
+  {
+    "jobKey": "8eb3d029c08c2aaf",
+    "title": "Senior React Developer - SAP BTP",
+    "company": "DyFlex Solutions",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=8eb3d029c08c2aaf",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.437Z"
+  },
+  {
+    "jobKey": "626a9a0f3d88ae90",
+    "title": "Senior Architect",
+    "company": "Guidewire Software",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=626a9a0f3d88ae90",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.446Z"
+  },
+  {
+    "jobKey": "d45767903e1b4a3e",
+    "title": "Developer Relations Manager - ANZ",
+    "company": "NVIDIA",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=d45767903e1b4a3e",
+    "pageNumber": 2,
+    "scrapedAt": "2026-02-13T17:50:14.455Z"
+  },
+  {
+    "jobKey": "a1b2c3d4e5f67890",
+    "title": "Principal Full Stack Software Engineer",
+    "company": "Sleek",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=a1b2c3d4e5f67890",
+    "pageNumber": 4,
+    "scrapedAt": "2026-02-13T17:50:21.214Z"
+  },
+  {
+    "jobKey": "890abcdef0123456",
+    "title": "Shopify Developer",
+    "company": "Maker Lab",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=890abcdef0123456",
+    "pageNumber": 3,
+    "scrapedAt": "2026-02-13T17:50:24.044Z"
+  },
+  {
+    "jobKey": "f463d8046d7a6f2a",
+    "title": "Senior Software Engineer - Cloud Infrastructure",
+    "company": "Clickhouse",
+    "location": "Remote",
+    "salary": null,
+    "link": "https://au.indeed.com/viewjob?jk=f463d8046d7a6f2a",
+    "pageNumber": 4,
+    "scrapedAt": "2026-02-13T17:50:29.158Z"
+  }
+]

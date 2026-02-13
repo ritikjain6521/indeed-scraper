@@ -637,6 +637,14 @@ const pricePerCompany = 0.005; // $5 per 1000 companies
 const totalCost = (totalSavedItems * pricePerJob) + (scrapedCompanyCount * pricePerCompany);
 log.info(`[MONETIZATION] Estimated Run Cost: $${totalCost.toFixed(4)} USD (Jobs: $${(totalSavedItems * pricePerJob).toFixed(4)} + Companies: $${(scrapedCompanyCount * pricePerCompany).toFixed(4)})`);
 
+// Info about datasets
+if (scrapedCompanyCount > 0) {
+    log.info(`📊 [DATASETS] Jobs saved to default dataset. Company profiles saved to "company-details" dataset.`);
+    if (Actor.isAtHome()) {
+        log.info(`👉 To view company profiles in Apify UI: Go to Storage tab → Datasets → "company-details"`);
+    }
+}
+
 // Persist results and state
 await Actor.setValue('SEEN_KEYS', Array.from(seenKeys));
 
@@ -651,5 +659,7 @@ if (!Actor.isAtHome()) {
         log.error('Failed to export jobs.json locally.');
     }
 }
+
+
 
 await Actor.exit();  

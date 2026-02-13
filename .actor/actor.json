@@ -11,5 +11,25 @@
 		"generatedBy": "<FILL-IN-MODEL>"
 	},
 	"dockerfile": "../Dockerfile",
-	"input": "./input_schema.json"
+	"input": "./input_schema.json",
+	"storages": {
+		"dataset": {
+			"actorSpecification": 1,
+			"title": "Job Listings",
+			"views": {
+				"overview": {
+					"title": "Overview",
+					"transformation": {
+						"fields": [
+							"company",
+							"title",
+							"location",
+							"salary",
+							"link"
+						]
+					}
+				}
+			}
+		}
+	}
 }
