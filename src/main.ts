@@ -142,6 +142,20 @@ const enqueueSearch = async (q: string, l: string) => {
     });
     enqueuedCount++;
 
+    // Expansion: If user wants >1000 jobs and searching "Remote" in US, iterate through states
+    // This bypasses the Indeed 1000-job-per-query limit
+    if (country === 'US' && l.toLowerCase().includes('remote') && maxItems > 1000) {
+        log.info(`[DEEP SEARCH] Expanding "${q}" into 50 US states to find more unique jobs...`);
+        for (const stateCode of GLOBAL_REGIONS['US']) {
+            const stateUrl = buildUrl(q, stateCode);
+            const stateSessionKey = `search-${q}-${stateCode}`;
+            await requestQueue.addRequest({
+                url: stateUrl,
+                userData: { label: 'START', page: 0, startUrl: stateUrl, sessionKey: stateSessionKey, q, l: stateCode }
+            });
+            enqueuedCount++;
+        }
+    }
 };
 
 // 1. Add direct Start URLs
