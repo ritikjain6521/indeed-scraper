@@ -1,19 +1,42 @@
 {
-    "title": "Input Schema",
+    "title": "Indeed Scraper Input",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
+        "startUrls": {
+            "title": "Start URLs",
+            "type": "array",
+            "description": "Direct Indeed search URLs to scrape. (e.g. https://www.indeed.com/jobs?q=Software+Engineer&l=New+York)",
+            "editor": "requestListSources",
+            "sectionCaption": "Direct URLs",
+            "default": []
+        },
+        "companyUrls": {
+            "title": "Company URLs",
+            "type": "array",
+            "description": "Direct Indeed company job URLs to scrape. (e.g. https://www.indeed.com/cmp/Google/jobs)",
+            "editor": "requestListSources",
+            "default": []
+        },
         "position": {
             "title": "Job Position",
             "type": "string",
             "description": "Job position to search for",
-            "editor": "textfield"
+            "editor": "textfield",
+            "sectionCaption": "Search Parameters"
         },
         "location": {
             "title": "Location",
             "type": "string",
             "description": "Location to search in",
             "editor": "textfield"
+        },
+        "companyNames": {
+            "title": "Company Names",
+            "type": "array",
+            "description": "Specific companies to search for jobs from. (e.g. ['Google', 'Microsoft'])",
+            "editor": "stringList",
+            "default": []
         },
         "country": {
             "title": "Country",
@@ -27,19 +50,28 @@
                 "GB",
                 "CA",
                 "AU"
+            ],
+            "enumTitles": [
+                "United States",
+                "India",
+                "United Kingdom",
+                "Canada",
+                "Australia"
             ]
         },
         "maxItems": {
             "title": "Max Items",
             "type": "integer",
             "description": "Maximum number of items to scrape",
-            "default": 1000
+            "default": 1000,
+            "minimum": 1
         },
         "resetSeenKeys": {
             "title": "Reset Seen Keys",
             "type": "boolean",
             "description": "If true, the internal memory of already scraped jobs will be cleared for this run.",
-            "default": false
+            "default": false,
+            "sectionCaption": "Advanced Settings"
         },
         "proxyConfiguration": {
             "title": "Proxy Configuration",
@@ -57,7 +89,8 @@
             "title": "Bulk Searches",
             "type": "array",
             "description": "Multiple search queries in one run",
-            "editor": "json"
+            "editor": "json",
+            "default": []
         },
         "maxConcurrency": {
             "title": "Max Concurrency",
@@ -65,6 +98,20 @@
             "description": "Maximum number of pages processed at once. Cheerio can handle 10-50 safely.",
             "default": 10,
             "minimum": 1
+        },
+        "scrapeCompanyDetails": {
+            "title": "Scrape Company Details",
+            "type": "boolean",
+            "description": "If true, the scraper will visit company pages to extract details like website, industry, and size.",
+            "default": false,
+            "sectionCaption": "Company Details"
+        },
+        "maxCompanyPages": {
+            "title": "Max Company Pages",
+            "type": "integer",
+            "description": "Maximum number of unique company detail pages to scrape. 0 = unlimited.",
+            "default": 0,
+            "minimum": 0
         }
     },
     "required": [

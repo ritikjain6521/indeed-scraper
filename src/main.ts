@@ -11,6 +11,7 @@ import * as path from 'path';
  * - Anti-blocking headers & Session consistency
  * - No login wall on page-2 logic
  * - Stable long runs (2-4 hours)
+ * - Company details extraction (Website, Industry, etc.)
  */
 
 interface BulkQuery {
@@ -19,22 +20,27 @@ interface BulkQuery {
 }
 
 interface Input {
-    position: string;
+    position?: string;
     location?: string;
     country?: string;
     maxItems?: number;
     bulkQueries?: BulkQuery[];
+    startUrls?: { url: string }[];
+    companyUrls?: { url: string }[];
+    companyNames?: string[];
     resetSeenKeys?: boolean;
     maxConcurrency?: number;
     proxyConfiguration?: any;
     proxyUrls?: string[];
+    scrapeCompanyDetails?: boolean;
+    maxCompanyPages?: number;
 }
 
 await Actor.init();
 
 const input = await Actor.getInput<Input>();
 if (!input) {
-    await Actor.exit('Missing input. Please provide at least "position".');
+    await Actor.exit('Missing input. Please provide at least "position", "startUrls", or "bulkQueries".');
     throw new Error('Missing input');
 }
 
@@ -45,6 +51,8 @@ const country = (input.country || 'US').trim().toUpperCase();
 const maxItems = Number(input.maxItems) || 1000;
 const resetSeenKeys = Boolean(input.resetSeenKeys);
 const maxConcurrency = Number(input.maxConcurrency) || 10;
+const scrapeCompanyDetails = Boolean(input.scrapeCompanyDetails);
+const maxCompanyPages = Number(input.maxCompanyPages) || 0;
 
 // Domain mapping
 const domains: Record<string, string> = {
@@ -83,6 +91,8 @@ if (resetSeenKeys) {
 
 const seenKeys = new Set<string>(persistentKeys);
 let totalSavedItems = 0;
+let scrapedCompanyCount = 0;
+const seenCompanies = new Set<string>();
 
 const requestQueue = await RequestQueue.open();
 
@@ -121,17 +131,58 @@ const enqueueSearch = async (q: string, l: string) => {
     }
 };
 
-// Add primary search
+// 1. Add direct Start URLs
+if (input.startUrls && Array.isArray(input.startUrls)) {
+    for (const { url } of input.startUrls) {
+        if (!url) continue;
+        log.info(`Enqueuing direct URL: ${url}`);
+        await requestQueue.addRequest({
+            url,
+            userData: { label: 'START', page: 0, startUrl: url }
+        });
+    }
+}
+
+// 2. Add company direct URLs
+if (input.companyUrls && Array.isArray(input.companyUrls)) {
+    for (const { url } of input.companyUrls) {
+        if (!url) continue;
+        log.info(`Enqueuing direct company URL: ${url}`);
+        await requestQueue.addRequest({
+            url,
+            userData: { label: 'START', page: 0, startUrl: url }
+        });
+    }
+}
+
+// 3. Add primary search
 if (position) {
     await enqueueSearch(position, location);
 }
 
-// Add bulk searches
+// 4. Add company searches
+if (input.companyNames && Array.isArray(input.companyNames)) {
+    for (const company of input.companyNames) {
+        if (!company) continue;
+        // Search by company name
+        await enqueueSearch(`company:"${company}"`, location);
+    }
+}
+
+// 5. Add bulk searches
 if (input.bulkQueries && Array.isArray(input.bulkQueries)) {
     for (const bq of input.bulkQueries) {
         if (!bq.query) continue;
         await enqueueSearch(bq.query, bq.location || '');
     }
+}
+
+// Validation: Stop if no requests enqueued
+const queueInfo = await requestQueue.getInfo();
+if (queueInfo?.totalRequestCount === 0) {
+    const errorMsg = 'No search queries, company names, or start URLs provided. Nothing to scrape.';
+    log.error(errorMsg);
+    await Actor.exit(errorMsg);
 }
 
 // Proxy configuration - Residential is highly recommended for 10K jobs
@@ -186,8 +237,38 @@ const crawler = new CheerioCrawler({
     ],
 
     // Core Logic
-    async requestHandler({ $, request, log, session }) {
+    async requestHandler({ $, request, log, session, crawler }) {
         const { label, page: pageNum = 0, referer, startUrl, sessionKey, duplicateCount = 0, q, l } = request.userData;
+
+        if (label === 'COMPANY_DETAIL') {
+            if (maxCompanyPages > 0 && scrapedCompanyCount >= maxCompanyPages) {
+                log.info('Reached maxCompanyPages limit. Skipping.');
+                return;
+            }
+
+            log.info(`Scraping company details: ${request.url}`);
+            const companyName = $('h1').first().text().trim() || $('.css-1h50q69').text().trim();
+            const details: any = {
+                url: request.url,
+                name: companyName,
+                scrapedAt: new Date().toISOString(),
+                type: 'company_detail'
+            };
+
+            // Extract common details from the "About" section or sidebar
+            $('[data-testid="companyInfo-section"] div, .css-1w0lcsz div').each((_, el) => {
+                const text = $(el).text();
+                if (text.includes('Website')) details.website = $(el).find('a').attr('href');
+                if (text.includes('Industry')) details.industry = text.replace('Industry', '').trim();
+                if (text.includes('Company size')) details.size = text.replace('Company size', '').trim();
+                if (text.includes('Headquarters')) details.headquarters = text.replace('Headquarters', '').trim();
+                if (text.includes('Revenue')) details.revenue = text.replace('Revenue', '').trim();
+            });
+
+            await Dataset.pushData(details);
+            scrapedCompanyCount++;
+            return;
+        }
 
         // Diagnostic: Log session status
         if (pageNum > 0) {
@@ -260,9 +341,9 @@ const crawler = new CheerioCrawler({
                 ];
 
                 let foundJson = false;
-                $('script').toArray().forEach(s => {
+                for (const s of $('script').toArray()) {
                     const scriptText = $(s).html() || '';
-                    if (scriptText.length < 10) return;
+                    if (scriptText.length < 10) continue;
 
                     for (const source of scriptSources) {
                         if (scriptText.includes(source)) {
@@ -301,17 +382,34 @@ const crawler = new CheerioCrawler({
                                                 location: job.formattedLocation || job.location || 'Unknown Location',
                                                 salary: job.estimatedSalary || job.salarySnippet?.text || null,
                                                 link: `${baseUrl}/viewjob?jk=${jobKey}`,
+                                                companyRating: job.companyRating || null,
+                                                companyReviewCount: job.companyReviewCount || null,
                                                 pageNumber: pageNum + 1,
                                                 scrapedAt: new Date().toISOString(),
                                                 source: 'mosaic_json'
                                             });
+
+                                            // Enqueue company details if requested
+                                            if (scrapeCompanyDetails) {
+                                                const companySlug = job.companyName?.replace(/\s+/g, '-');
+                                                const companyUrl = `${baseUrl}/cmp/${companySlug}`;
+                                                if (companySlug && !seenCompanies.has(companyUrl)) {
+                                                    if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
+                                                        seenCompanies.add(companyUrl);
+                                                        await crawler.addRequests([{
+                                                            url: companyUrl,
+                                                            userData: { label: 'COMPANY_DETAIL' }
+                                                        }]);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 } catch (e) { }
                             }
                         }
                     }
-                });
+                }
             } catch (jsonErr: any) {
                 log.error(`Deep JSON extraction failed: ${jsonErr.message}`);
             }
@@ -351,8 +449,25 @@ const crawler = new CheerioCrawler({
                         link: fullLink,
                         pageNumber: pageNum + 1,
                         scrapedAt: new Date().toISOString(),
-                        source: 'html'
+
                     });
+
+                    // Enqueue company details if requested
+                    if (scrapeCompanyDetails) {
+                        const companyLink = card.find('[data-testid="company-name"] a, a[data-testid="company-name"]').attr('href');
+                        if (companyLink) {
+                            const absoluteCompanyLink = companyLink.startsWith('http') ? companyLink : `${baseUrl}${companyLink}`;
+                            if (!seenCompanies.has(absoluteCompanyLink)) {
+                                if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
+                                    seenCompanies.add(absoluteCompanyLink);
+                                    await crawler.addRequests([{
+                                        url: absoluteCompanyLink,
+                                        userData: { label: 'COMPANY_DETAIL' }
+                                    }]);
+                                }
+                            }
+                        }
+                    }
                 } catch (err: any) {
                     log.error(`Extraction error: ${err.message}`);
                 }
@@ -407,8 +522,11 @@ const crawler = new CheerioCrawler({
 
         if (totalSavedItems < maxItems && (totalFoundOnPage > 0 || pageNum < 5) && pageNum < 100) {
             const nextStart = (pageNum + 1) * 10;
-            // Use q and l from userData to ensure we paginate the correct search!
-            const nextUrl = buildUrl(q || position || '', l || location || '', nextStart);
+
+            // Safely build next URL by taking the startUrl and updating the 'start' param
+            const nextUrlObj = new URL(startUrl);
+            nextUrlObj.searchParams.set('start', nextStart.toString());
+            const nextUrl = nextUrlObj.toString();
 
             await requestQueue.addRequest({
                 url: nextUrl,
@@ -456,5 +574,4 @@ if (!Actor.isAtHome()) {
     }
 }
 
-await Actor.exit();
-
+await Actor.exit();  
