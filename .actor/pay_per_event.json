@@ -13,5 +13,10 @@
         "eventName": "deep-search-request",
         "eventTitle": "Deep Search Request",
         "eventDescription": "Charged when the scraper expands a broad search (like 'Remote') into specific regional queries to bypass Indeed's 1000-job limit."
+    },
+    {
+        "eventName": "job-skipped-duplicate",
+        "eventTitle": "Duplicate Job Skipped",
+        "eventDescription": "Recorded for each job listing that was already scraped and skipped to avoid duplicates."
     }
 ]

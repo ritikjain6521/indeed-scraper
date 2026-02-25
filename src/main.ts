@@ -858,6 +858,7 @@ const crawler = new CheerioCrawler({
                         if (!jobKey) continue;
                         if (seenKeys.has(jobKey)) {
                             totalDuplicatesSkipped++;
+                            await chargeAndCheck({ eventName: 'job-skipped-duplicate', count: 1 });
                             continue;
                         }
 
@@ -1214,6 +1215,7 @@ const crawler = new CheerioCrawler({
 
                     if (seenKeys.has(jobKey)) {
                         totalDuplicatesSkipped++;
+                        await chargeAndCheck({ eventName: 'job-skipped-duplicate', count: 1 });
                         continue;
                     }
 
