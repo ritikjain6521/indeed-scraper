@@ -1,0 +1,17 @@
+[
+    {
+        "eventName": "job-standard-scraped",
+        "eventTitle": "Standard Job Scraped",
+        "eventDescription": "Charged for each unique job listing scraped with basic details directly from search results."
+    },
+    {
+        "eventName": "job-premium-scraped",
+        "eventTitle": "Premium Job Scraped (Merged)",
+        "eventDescription": "Charged for each job listing successfully enhanced with full company details (description, employees, revenue, website, etc.)."
+    },
+    {
+        "eventName": "deep-search-request",
+        "eventTitle": "Deep Search Request",
+        "eventDescription": "Charged when the scraper expands a broad search (like 'Remote') into specific regional queries to bypass Indeed's 1000-job limit."
+    }
+]

@@ -3,12 +3,28 @@
 .idea
 .vscode
 .zed
-storage
-apify_storage
-crawlee_storage
-node_modules
-dist
+storage/
+apify_storage/
+crawlee_storage/
+node_modules/
+dist/
 tsconfig.tsbuildinfo
+.git/
+.storage
 
 # Added by Apify CLI
 .venv
+
+# Junk and local files
+temp_file.zip
+*.png
+*.jpg
+*.jpeg
+*.gif
+jobs.json
+test-output.txt
+.env
+*.log
+.env.example
+.env.*
+

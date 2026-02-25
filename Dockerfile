@@ -50,8 +50,5 @@ COPY --from=builder --chown=myuser:myuser /usr/src/app/dist ./dist
 # Copy the remaining files (source code, schemas, etc.)
 COPY --chown=myuser:myuser . ./
 
-# Final verification that Playwright is ready (usually no-op on this image)
-RUN npx playwright install chromium
-
 # Start the Actor
 CMD ["node", "dist/main.js"]

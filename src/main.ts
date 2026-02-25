@@ -1,7 +1,5 @@
 import { Actor } from 'apify';
 import { CheerioCrawler, Dataset, RequestQueue, log } from 'crawlee';
-import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * Indeed 10K Jobs Production-Safe Preset
@@ -34,25 +32,65 @@ interface Input {
     proxyUrls?: string[];
     scrapeCompanyDetails?: boolean;
     maxCompanyPages?: number;
+    maxAge?: number;
+    jobType?: string;
 }
 
 await Actor.init();
 
-const input = await Actor.getInput<Input>();
-if (!input) {
-    await Actor.exit('Missing input. Please provide at least "position", "startUrls", or "bulkQueries".');
-    throw new Error('Missing input');
+// Monetization counters
+let totalJobsScraped = 0;
+let totalCompaniesScraped = 0;
+let totalJobsWithMetadata = 0;
+
+// Credit check helper
+const chargeAndCheck = async (options: { eventName: string, count: number }) => {
+    if (!Actor.isAtHome() || options.count === 0) return;
+    try {
+        await Actor.charge(options);
+    } catch (err: any) {
+        const msg = err.message?.toLowerCase() || '';
+        if (msg.includes('insufficient') || msg.includes('credit') || msg.includes('funds') || msg.includes('balance')) {
+            log.error(`[CRITICAL] Credit exhaustion: ${err.message}. Aborting to prevent further usage.`);
+            await Actor.exit(`Credit exhaustion: ${err.message}`);
+        }
+        log.error(`[CHARGE ERROR] ${err.message}`);
+    }
+};
+
+if (Actor.isAtHome()) {
+    log.info('Checking credit balance before start...');
+    try {
+        // Test charge with 0 count to verify credit state
+        await Actor.charge({ eventName: 'job-standard-scraped', count: 0 });
+    } catch (err: any) {
+        const msg = err.message?.toLowerCase() || '';
+        if (msg.includes('insufficient') || msg.includes('credit') || msg.includes('funds')) {
+            await Actor.exit(`Cannot start: Insufficient credits. ${err.message}`);
+        }
+    }
 }
 
-// Robust input validation
-const position = input.position?.trim();
-const location = input.location?.trim() || '';
+const input = (await Actor.getInput<Input>()) || {} as Input;
+
+// Robust input validation with defaults from schema
 const country = (input.country || 'US').trim().toUpperCase();
+const location = input.location?.trim() || '';
+
+// If no search criteria provided, default to "Software Engineer"
+let position = input.position?.trim();
+if (!position && !input.startUrls?.length && !input.companyUrls?.length && !input.companyNames?.length && !input.bulkQueries?.length) {
+    log.info('No search criteria provided. Using default search: "Software Engineer"');
+    position = 'Software Engineer';
+}
+
 const maxItems = Number(input.maxItems) || 1000;
 const resetSeenKeys = Boolean(input.resetSeenKeys);
 const maxConcurrency = Number(input.maxConcurrency) || 10;
-const scrapeCompanyDetails = Boolean(input.scrapeCompanyDetails);
+const scrapeCompanyDetails = input.scrapeCompanyDetails !== false; // Default to true
 const maxCompanyPages = Number(input.maxCompanyPages) || 0;
+const maxAge = Number(input.maxAge) || null;
+const jobType = input.jobType || '';
 
 // Domain mapping
 const domains: Record<string, string> = {
@@ -65,6 +103,7 @@ const domains: Record<string, string> = {
 };
 const domain = domains[country] || 'indeed.com';
 const baseUrl = `https://${domain}`;
+
 
 // Global Regions for Deep Search Expansion (supports US, IN, GB/UK, CA, AU)
 const GLOBAL_REGIONS: Record<string, string[]> = {
@@ -114,11 +153,13 @@ if (resetSeenKeys) {
 }
 
 const seenKeys = new Set<string>(persistentKeys);
+const seenCompanies = new Set<string>(); // Used to deduplicate enqueuing COMPANY_DETAIL
 let totalSavedItems = 0;
-let scrapedCompanyCount = 0;
-const seenCompanies = new Set<string>();
 
 const requestQueue = await RequestQueue.open();
+// Buffer for jobs waiting for company details
+const pendingJobs = new Map<string, any[]>();
+const companyCache = new Map<string, any>();
 let enqueuedCount = 0;
 
 // Helper to build URL
@@ -127,6 +168,8 @@ const buildUrl = (q: string, l: string = '', start: number = 0) => {
     url.searchParams.set('q', q);
     if (l) url.searchParams.set('l', l);
     if (start > 0) url.searchParams.set('start', start.toString());
+    if (maxAge) url.searchParams.set('fromage', maxAge.toString());
+    if (jobType) url.searchParams.set('jt', jobType);
 
     return url.toString();
 };
@@ -142,16 +185,22 @@ const enqueueSearch = async (q: string, l: string) => {
     });
     enqueuedCount++;
 
-    // Expansion: If user wants >1000 jobs and searching "Remote" in US, iterate through states
+    // Global Deep Search Expansion - works for all supported countries
+    // If user wants >1000 jobs and searching "Remote" (broad location), expand into regions
     // This bypasses the Indeed 1000-job-per-query limit
-    if (country === 'US' && l.toLowerCase().includes('remote') && maxItems > 1000) {
-        log.info(`[DEEP SEARCH] Expanding "${q}" into 50 US states to find more unique jobs...`);
-        for (const stateCode of GLOBAL_REGIONS['US']) {
-            const stateUrl = buildUrl(q, stateCode);
-            const stateSessionKey = `search-${q}-${stateCode}`;
+    const regions = GLOBAL_REGIONS[country];
+    if (regions && l.toLowerCase().includes('remote') && maxItems > 1000) {
+        log.info(`[DEEP SEARCH] Expanding "${q}" into ${regions.length} regions for ${country} to find more unique jobs...`);
+
+        // Charge for deep search expansion
+        await chargeAndCheck({ eventName: 'deep-search-request', count: 1 });
+
+        for (const region of regions) {
+            const regionUrl = buildUrl(q, region);
+            const regionSessionKey = `search-${q}-${region}`;
             await requestQueue.addRequest({
-                url: stateUrl,
-                userData: { label: 'START', page: 0, startUrl: stateUrl, sessionKey: stateSessionKey, q, l: stateCode }
+                url: regionUrl,
+                userData: { label: 'START', page: 0, startUrl: regionUrl, sessionKey: regionSessionKey, q, l: region }
             });
             enqueuedCount++;
         }
@@ -266,39 +315,403 @@ const crawler = new CheerioCrawler({
     ],
 
     // Core Logic
-    async requestHandler({ $, request, log, session, crawler }) {
+    async requestHandler({ $, request, log, session }) {
         const { label, page: pageNum = 0, referer, startUrl, sessionKey, duplicateCount = 0, q, l } = request.userData;
 
         if (label === 'COMPANY_DETAIL') {
-            if (maxCompanyPages > 0 && scrapedCompanyCount >= maxCompanyPages) {
-                log.info('Reached maxCompanyPages limit. Skipping.');
-                return;
-            }
+            const { companyUrl, jobData: sampleJobData } = request.userData;
+            log.info(`Extracting company details for: ${sampleJobData.companyName}`);
 
-            log.info(`Scraping company details: ${request.url}`);
-            const companyName = $('h1').first().text().trim() || $('.css-1h50q69').text().trim();
-            const details: any = {
-                url: request.url,
-                name: companyName,
-                scrapedAt: new Date().toISOString(),
-                type: 'company_detail'
-            };
+            // Improved Phone & Email Extraction
+            const telLinks = $('a[href^="tel:"]').map((_, el) => $(el).attr('href')?.replace('tel:', '').trim()).get();
 
-            // Extract common details from the "About" section or sidebar
-            $('[data-testid="companyInfo-section"] div, .css-1w0lcsz div').each((_, el) => {
-                const text = $(el).text();
-                if (text.includes('Website')) details.website = $(el).find('a').attr('href');
-                if (text.includes('Industry')) details.industry = text.replace('Industry', '').trim();
-                if (text.includes('Company size')) details.size = text.replace('Company size', '').trim();
-                if (text.includes('Headquarters')) details.headquarters = text.replace('Headquarters', '').trim();
-                if (text.includes('Revenue')) details.revenue = text.replace('Revenue', '').trim();
+            // Clean text by removing scripts and styles to avoid matching IDs/Timestamps/Decimals in JSON blobs
+            const $cleanBody = $('body').clone();
+            $cleanBody.find('script, style, head, header, footer').remove();
+            const cleanText = $cleanBody.text();
+
+            const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+            const regexMatches = cleanText.match(phoneRegex) || [];
+
+            // Validate matches to remove common junk (timestamps, coordinates, IDs, floating points)
+            const validatedPhones = regexMatches.filter(p => {
+                const digits = p.replace(/\D/g, '');
+                // Standard international/local phones are 7-15 digits
+                if (digits.length < 7 || digits.length > 15) return false;
+
+                // Reject timestamps (long sequences starting with 11, 16, 17)
+                if (digits.length >= 10 && (digits.startsWith('11') || digits.startsWith('16') || digits.startsWith('17'))) {
+                    const num = parseInt(digits.substring(0, 10), 10);
+                    if (num > 1000000000 && num < 2000000000) return false;
+                }
+
+                // Reject decimals that look like ratings or coordinates (e.g. 4.1111 or 123.456.789)
+                if (p.includes('.')) {
+                    const parts = p.split('.');
+                    if (parts.some(part => part.length === 1)) return false; // "3.333"
+                    if (parts.length > 3) return false; // Too many parts
+                }
+
+                return true;
             });
 
+            const mobileMatches = Array.from(new Set([...telLinks, ...validatedPhones]));
 
-            // Push to separate dataset for company details (better organization in Apify UI)
-            const companyDataset = await Actor.openDataset('company-details');
-            await companyDataset.pushData(details);
-            scrapedCompanyCount++;
+            const bodyHtml = $.html();
+            const rawEmailMatches = cleanText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+            const companyEmails = Array.from(new Set(
+                rawEmailMatches
+                    .map(e => e.toLowerCase())
+                    .filter(e => !e.match(/\.(png|jpg|jpeg|gif|svg|webp|css|js|woff|ttf|pdf|zip)/i))
+            ));
+
+            const companyDetails: any = {
+                companyBriefDescription: null,
+                companyDescription: null,
+                companyAddresses: [] as string[],
+                companyIndustry: null,
+                companyNumEmployees: null,
+                companyRevenue: null,
+                companyFounded: null,
+                companyHeaderUrl: null,
+                companyLinks: { corporateWebsite: null as string | null },
+                companyEmails,
+            };
+
+            const extractText = (selector: string): string | null => $(selector).first().text().trim() || null;
+            const extractAttr = (selector: string, attr: string): string | null => $(selector).first().attr(attr)?.trim() || null;
+
+            // ── Aggressive Mosaic / window JSON Extraction ──
+            $('script').each((_, script) => {
+                const scriptText = $(script).html() || '';
+                if (scriptText.length < 200) return;
+
+                // Try multiple JSON block patterns
+                const jsonCandidates: string[] = [];
+
+                // Pattern 1: mosaic provider assignment
+                for (const m of scriptText.matchAll(/window\.mosaic\.providerData\["[\w-]+"\]\s*=\s*(\{[\s\S]+?\});\s*(?:window\.mosaic|$)/gm)) {
+                    jsonCandidates.push(m[1]);
+                }
+                // Pattern 2: window.__INITIAL_DATA__
+                for (const m of scriptText.matchAll(/window\.__(?:INITIAL_DATA|initialData|appData)__\s*=\s*(\{[\s\S]+?\});/gm)) {
+                    jsonCandidates.push(m[1]);
+                }
+                // Pattern 3: any large JSON object assignment
+                for (const m of scriptText.matchAll(/=\s*(\{[\s\S]{300,}\});/gm)) {
+                    jsonCandidates.push(m[1]);
+                }
+
+                for (const jsonStr of jsonCandidates) {
+                    try {
+                        const data = JSON.parse(jsonStr);
+
+                        // Recursive deep-find — returns first truthy value found for any key
+                        const deepFind = (obj: any, keys: string[], depth = 0): any => {
+                            if (!obj || typeof obj !== 'object' || depth > 12) return null;
+                            for (const k of keys) {
+                                if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+                            }
+                            for (const k of Object.keys(obj)) {
+                                const r = deepFind(obj[k], keys, depth + 1);
+                                if (r !== null && r !== undefined && r !== '') return r;
+                            }
+                            return null;
+                        };
+
+                        // Collect all address-like strings
+                        const addrRaw = deepFind(data, ['headquartersLocation', 'headquarters', 'address', 'hqLocation', 'companyAddress', 'location']);
+                        if (addrRaw && typeof addrRaw === 'string' && addrRaw.length > 2) {
+                            if (!companyDetails.companyAddresses.includes(addrRaw)) companyDetails.companyAddresses.push(addrRaw);
+                        }
+
+                        if (!companyDetails.companyBriefDescription) {
+                            companyDetails.companyBriefDescription = deepFind(data, ['tagline', 'briefDescription', 'descriptionSummary', 'subtitle', 'slogan', 'shortDescription']);
+                        }
+                        if (!companyDetails.companyDescription) {
+                            companyDetails.companyDescription = deepFind(data, ['description', 'about', 'extendedDescription', 'companyDescription', 'overview', 'longDescription', 'aboutSection']);
+                            if (typeof companyDetails.companyDescription === 'object') {
+                                companyDetails.companyDescription = companyDetails.companyDescription?.text || companyDetails.companyDescription?.content || JSON.stringify(companyDetails.companyDescription);
+                            }
+                        }
+                        if (!companyDetails.companyNumEmployees) {
+                            const emp = deepFind(data, ['employeeCount', 'size', 'employees', 'companySize', 'numEmployees', 'employeeRange', 'employeeCountRange']);
+                            companyDetails.companyNumEmployees = emp ? (typeof emp === 'object' ? (emp.text || emp.label || emp.min + '-' + emp.max) : String(emp)) : null;
+                        }
+                        if (!companyDetails.companyRevenue) {
+                            const rev = deepFind(data, ['revenue', 'annualRevenue', 'revenueModel', 'financials', 'revenueRange', 'revenueText']);
+                            companyDetails.companyRevenue = rev ? (typeof rev === 'object' ? (rev.text || rev.label || rev.revenue) : String(rev)) : null;
+                        }
+                        if (!companyDetails.companyFounded) {
+                            const f = deepFind(data, ['founded', 'yearFounded', 'foundingDate', 'foundedYear', 'companyFounded', 'yearEstablished']);
+                            companyDetails.companyFounded = f ? String(f) : null;
+                        }
+                        if (!companyDetails.companyHeaderUrl) {
+                            companyDetails.companyHeaderUrl = deepFind(data, ['headerImageUrl', 'coverImageUrl', 'heroImageUrl', 'headerPhoto', 'coverPhoto', 'bannerImageUrl', 'backgroundImageUrl']);
+                        }
+                        if (!companyDetails.companyIndustry) {
+                            const ind = deepFind(data, ['industry', 'industryName', 'sector', 'companyIndustry', 'industryLabel']);
+                            companyDetails.companyIndustry = ind ? (typeof ind === 'object' ? (ind.label || ind.name || ind.text) : String(ind)) : null;
+                        }
+
+                        // Social links
+                        const lks = deepFind(data, ['links', 'socialLinks', 'contactLinks', 'externalLinks', 'socialMedia', 'companyLinks']);
+                        if (lks && typeof lks === 'object') {
+                            if (!companyDetails.companyLinks.corporateWebsite) {
+                                companyDetails.companyLinks.corporateWebsite = lks.website || lks.corporateWebsite || lks.url || lks.corporateWebsiteUrl || lks.webUrl || null;
+                            }
+                        }
+
+                        // Try to find website in any array of links
+                        const allLinks = deepFind(data, ['externalLinks', 'socialMediaLinks', 'companyLinksArray']);
+                        if (Array.isArray(allLinks)) {
+                            for (const linkObj of allLinks) {
+                                const url = linkObj.url || linkObj.href || (typeof linkObj === 'string' ? linkObj : '');
+                                if (!url || typeof url !== 'string') continue;
+                                if (url.startsWith('http') && !url.match(/indeed|linkedin|twitter|facebook|x\.com|google|youtube|instagram/i)) {
+                                    if (!companyDetails.companyLinks.corporateWebsite) companyDetails.companyLinks.corporateWebsite = url;
+                                }
+                            }
+                        }
+                    } catch (e) { /* ignore parse errors */ }
+                }
+            });
+
+            // ── Enhanced DOM Fallbacks (broad selectors + common Indeed patterns) ──
+
+            // Social links fallback (scan all links on page)
+            if (!companyDetails.companyLinks.linkedin || !companyDetails.companyLinks.twitter || !companyDetails.companyLinks.facebook) {
+                $('a[href]').each((_, el) => {
+                    const href = $(el).attr('href') || '';
+                    if (href.includes('linkedin.com/company') && !companyDetails.companyLinks.linkedin) companyDetails.companyLinks.linkedin = href;
+                    if ((href.includes('twitter.com/') || href.includes('x.com/')) && !companyDetails.companyLinks.twitter) companyDetails.companyLinks.twitter = href;
+                    if (href.includes('facebook.com/') && !companyDetails.companyLinks.facebook) companyDetails.companyLinks.facebook = href;
+                });
+            }
+
+            // Description
+            if (!companyDetails.companyDescription) {
+                companyDetails.companyDescription =
+                    extractText('[data-testid="AboutSection-description"]') ||
+                    extractText('[data-testid="cmp-AboutSection-content"]') ||
+                    extractText('.css-companyDescription') ||
+                    extractText('#aboutSection-description') ||
+                    extractText('.about-content-text') ||
+                    extractText('[class*="aboutText"]') ||
+                    extractText('[class*="companyDescription"]') ||
+                    extractText('.cmp-AboutSection') ||
+                    extractText('[class*="about"][class*="section"]');
+            }
+
+            // Brief description / tagline
+            if (!companyDetails.companyBriefDescription) {
+                companyDetails.companyBriefDescription =
+                    extractAttr('meta[name="description"]', 'content') ||
+                    extractAttr('meta[property="og:description"]', 'content') ||
+                    extractText('.tagline') ||
+                    extractText('[data-testid="company-tagline"]') ||
+                    extractText('[class*="tagline"]') ||
+                    extractText('[class*="headline"]');
+            }
+
+            // Industry
+            if (!companyDetails.companyIndustry) {
+                companyDetails.companyIndustry =
+                    extractText('[data-testid="companyInfo-industry"]') ||
+                    extractText('[data-testid="cmp-companyInfo-industry"]') ||
+                    extractText('li:contains("Industry") [class*="value"]') ||
+                    extractText('dt:contains("Industry") + dd') ||
+                    extractText('[class*="industry"]') ||
+                    (() => {
+                        // Scan all <li> elements for 'Industry' label
+                        let found: string | null = null;
+                        $('li, tr').each((_, el) => {
+                            const text = $(el).text();
+                            if (/^industry:/i.test(text.trim())) {
+                                found = text.replace(/^industry:/i, '').trim();
+                                return false;
+                            }
+                            return undefined;
+                        });
+                        return found;
+                    })();
+            }
+
+            // Employee count
+            if (!companyDetails.companyNumEmployees) {
+                companyDetails.companyNumEmployees =
+                    extractText('[data-testid="companyInfo-employeeCount"]') ||
+                    extractText('[data-testid="cmp-companyInfo-employeeCount"]') ||
+                    extractText('li:contains("Employee") [class*="value"]') ||
+                    extractText('dt:contains("Employee") + dd') ||
+                    extractText('.css-1wnv164') || // Specific indeed class for company info values
+                    extractText('[class*="employeeCount"]') ||
+                    extractText('[class*="companySize"]') ||
+                    (() => {
+                        let found: string | null = null;
+                        $('li, tr, div, p').each((_, el) => {
+                            const text = $(el).text().trim();
+                            // Look for patterns like "10,001+ employees", "501-1,000 employees", etc.
+                            if (/employees?|staff|size/i.test(text)) {
+                                const m = text.match(/([\d,]+[-+]?[\d,]*\s*(?:to\s*[\d,]+)?\s*(?:employees?|staff|people))/i);
+                                if (m && m[1].length < 30) { found = m[1]; return false; }
+                                // Second pass: just numbers followed by employees if already contains "size" or similar label
+                                if (text.length < 50 && /\d+/.test(text)) {
+                                    const m2 = text.match(/(\d[\d,]*[-+]?\d*)/);
+                                    if (m2) { found = m2[1]; return false; }
+                                }
+                            }
+                            return undefined;
+                        });
+                        return found;
+                    })();
+            }
+
+            // Revenue
+            if (!companyDetails.companyRevenue) {
+                companyDetails.companyRevenue =
+                    extractText('[data-testid="companyInfo-revenue"]') ||
+                    extractText('[data-testid="cmp-companyInfo-revenue"]') ||
+                    extractText('li:contains("Revenue") [class*="value"]') ||
+                    extractText('dt:contains("Revenue") + dd') ||
+                    extractText('[class*="revenue"]') ||
+                    (() => {
+                        let found: string | null = null;
+                        $('li, tr').each((_, el) => {
+                            const text = $(el).text().trim();
+                            if (/revenue/i.test(text)) {
+                                const m = text.match(/revenue[:\s]*([^\n]+)/i);
+                                if (m) { found = m[1].trim(); return false; }
+                            }
+                            return undefined;
+                        });
+                        return found;
+                    })();
+            }
+
+            // Founded year
+            if (!companyDetails.companyFounded) {
+                companyDetails.companyFounded =
+                    extractText('[data-testid="companyInfo-founded"]') ||
+                    extractText('[data-testid="cmp-companyInfo-founded"]') ||
+                    extractText('li:contains("Founded") [class*="value"]') ||
+                    extractText('dt:contains("Founded") + dd') ||
+                    extractText('[class*="founded"]') ||
+                    (() => {
+                        let found: string | null = null;
+                        $('li, tr').each((_, el) => {
+                            const text = $(el).text().trim();
+                            if (/founded/i.test(text)) {
+                                const m = text.match(/founded[:\s]*(\d{4})/i);
+                                if (m) { found = m[1]; return false; }
+                            }
+                            return undefined;
+                        });
+                        return found;
+                    })();
+            }
+
+            // Addresses / HQ
+            if (companyDetails.companyAddresses.length === 0) {
+                const hqSelectors = [
+                    '[data-testid="company-location"]',
+                    '[data-testid="cmp-companyInfo-headquarters"]',
+                    '[data-testid="companyInfo-headquarters"]',
+                    'li:contains("Headquarters") [class*="value"]',
+                    'dt:contains("Headquarters") + dd',
+                    'dt:contains("Location") + dd',
+                    '[class*="headquarters"]',
+                    '[class*="location-text"]',
+                    '.location-text',
+                ];
+                for (const sel of hqSelectors) {
+                    const hq = extractText(sel);
+                    if (hq) { companyDetails.companyAddresses = [hq]; break; }
+                }
+                // Also scan page for address pattern
+                if (companyDetails.companyAddresses.length === 0) {
+                    $('li, p, span').each((_, el) => {
+                        const text = $(el).text().trim();
+                        if (/headquarters[:\s]/i.test(text) && text.length < 120) {
+                            const addr = text.replace(/headquarters[:\s]*/i, '').trim();
+                            if (addr.length > 3) companyDetails.companyAddresses = [addr];
+                            return false;
+                        }
+                        return undefined;
+                    });
+                }
+            }
+
+            // Header image from meta tags
+            if (!companyDetails.companyHeaderUrl) {
+                companyDetails.companyHeaderUrl =
+                    extractAttr('meta[property="og:image"]', 'content') ||
+                    extractAttr('[data-testid="companyBrandingHeader"] img', 'src') ||
+                    extractAttr('[class*="headerImage"] img', 'src') ||
+                    extractAttr('[class*="coverImage"] img', 'src') ||
+                    extractAttr('[class*="heroImage"] img', 'src');
+            }
+
+            // Website from anchor hrefs
+            if (!companyDetails.companyLinks.corporateWebsite) {
+                // Find generic external website links (not indeed/social)
+                $('a[href]').each((_, el) => {
+                    const href = $(el).attr('href') || '';
+                    if (
+                        href.startsWith('http') &&
+                        !href.includes('indeed.com') &&
+                        !href.includes('google.com') &&
+                        !href.match(/linkedin|twitter|facebook|x\.com|youtube|instagram/i)
+                    ) {
+                        companyDetails.companyLinks.corporateWebsite = href;
+                        return false;
+                    }
+                    return undefined;
+                });
+            }
+
+            const scrapedAt = new Date().toISOString();
+
+
+            const companyInfo = {
+                companyBriefDescription: companyDetails.companyBriefDescription,
+                companyIndustry: companyDetails.companyIndustry,
+                companyNumEmployees: companyDetails.companyNumEmployees,
+                companyRevenue: companyDetails.companyRevenue,
+                companyFounded: companyDetails.companyFounded,
+                corporateWebsite: companyDetails.companyLinks.corporateWebsite,
+                companyPhones: mobileMatches,
+                companyEmails: companyEmails,
+                companyHeaderUrl: companyDetails.companyHeaderUrl || sampleJobData.companyHeaderUrl,
+                // Merging rating - use company profile rating if it has more data
+                rating: (companyDetails.rating?.count > (sampleJobData.rating?.count || 0)) ? companyDetails.rating : sampleJobData.rating,
+                companyScrapedAt: scrapedAt,
+            };
+
+            // Cache for future jobs of the same company
+            companyCache.set(companyUrl, companyInfo);
+
+            // Push all pending jobs for this company
+            const jobsWaiting = pendingJobs.get(companyUrl);
+            if (jobsWaiting && jobsWaiting.length > 0) {
+                log.info(`Pushing ${jobsWaiting.length} jobs for ${sampleJobData.companyName} with merged company details.`);
+                const finalJobs = jobsWaiting.map(j => ({
+                    ...j,
+                    ...companyInfo,
+                    // Merge job-level and company-level contacts
+                    emails: Array.from(new Set([...(j.emails || []), ...companyEmails])),
+                    phones: Array.from(new Set([...(j.phones || []), ...mobileMatches]))
+                }));
+                await Dataset.pushData(finalJobs);
+                totalJobsScraped += finalJobs.length;
+                totalJobsWithMetadata += finalJobs.length;
+                pendingJobs.delete(companyUrl);
+
+                // Charge as Premium for merged jobs
+                await chargeAndCheck({ eventName: 'job-premium-scraped', count: finalJobs.length });
+            }
+
+            totalCompaniesScraped++;
             return;
         }
 
@@ -356,115 +769,416 @@ const crawler = new CheerioCrawler({
         let newJobsOnPage = 0;
         let totalFoundOnPage = jobCards.length;
 
-        // Fallback: If no HTML cards found, check for Mosaic-data JSON (common on stealth-blocked Page 2+)
-        if (totalFoundOnPage === 0) {
-            log.info('No job cards found in HTML. Executing deep JSON extraction...');
-            const htmlSnippet = $.html().substring(0, 1000);
-            log.info(`HTML Head Snippet: ${htmlSnippet.replace(/\s+/g, ' ')}`);
+        // ─────────────────────────────────────────────────────────────────────
+        // PRIMARY EXTRACTION: Always try Mosaic JSON first.
+        // The Mosaic JSON (embedded in every Indeed search page) contains ALL
+        // rich fields: jobType, attributes, benefits, description, salary guide,
+        // companyHeaderUrl, rating, hiringDemand, etc.
+        // HTML card extraction is a last-resort fallback with very limited data.
+        // ─────────────────────────────────────────────────────────────────────
+        log.info('Attempting Mosaic JSON extraction (primary path)...');
 
-            try {
-                // Indeed stores data in several possible script tags depending on region/device
-                const scriptSources = [
-                    'window.mosaic.providerData["mosaic-provider-jobcards"]',
-                    'window._initialData',
-                    'mosaic.providerData',
-                    'window.initialData',
-                    '_initialData',
-                ];
+        const mosaicScriptSources = [
+            'window.mosaic.providerData["mosaic-provider-jobcards"]',
+            'mosaic.providerData',
+            'window._initialData',
+            'window.initialData',
+            '_initialData',
+        ];
 
-                let foundJson = false;
-                for (const s of $('script').toArray()) {
-                    const scriptText = $(s).html() || '';
-                    if (scriptText.length < 10) continue;
+        let mosaicExtracted = false;
+        try {
+            for (const s of $('script').toArray()) {
+                if (mosaicExtracted) break;
+                const scriptText = $(s).html() || '';
+                if (scriptText.length < 100) continue;
 
-                    for (const source of scriptSources) {
-                        if (scriptText.includes(source)) {
-                            log.info(`Found candidate script source: ${source}`);
-                            // Try to extract the JSON object
-                            const jsonMatch = scriptText.match(/({[\s\S]+?});/);
-                            if (jsonMatch) {
-                                try {
-                                    // Clean up common JS assignments
-                                    let cleanJson = jsonMatch[1].trim();
-                                    if (cleanJson.endsWith(';')) cleanJson = cleanJson.slice(0, -1);
+                for (const src of mosaicScriptSources) {
+                    if (!scriptText.includes(src)) continue;
 
-                                    const rawData = JSON.parse(cleanJson);
-                                    const jobs = rawData?.metaData?.mosaicProviderJobCardsModel?.results ||
-                                        rawData?.jobCards ||
-                                        rawData?.results ||
-                                        rawData?.props?.pageProps?.initialData?.jobCards || [];
+                    log.info(`Found Mosaic candidate script: "${src}"`);
 
-                                    if (jobs.length > 0 && !foundJson) {
-                                        foundJson = true;
-                                        totalFoundOnPage = jobs.length;
-                                        log.info(`SUCCESS: Extracted ${jobs.length} jobs from ${source} JSON.`);
-                                        for (const job of jobs) {
-                                            if (totalSavedItems >= maxItems) break;
-                                            const jobKey = job.jobkey || job.jk || job.jobKey;
-                                            if (!jobKey || seenKeys.has(jobKey)) continue;
+                    // For the main mosaic provider, extract exactly its assignment value.
+                    // For others, try to grab the largest JSON-like object.
+                    let rawData: any = null;
+                    try {
+                        if (src === 'window.mosaic.providerData["mosaic-provider-jobcards"]') {
+                            const m = scriptText.match(/window\.mosaic\.providerData\s*\[\s*"mosaic-provider-jobcards"\s*\]\s*=\s*(\{[\s\S]*?\});\s*(?:window\.mosaic|$)/);
+                            if (m) rawData = JSON.parse(m[1]);
+                        }
+                        if (!rawData) {
+                            // Greedy: try to find the biggest JSON blob in this script
+                            const m = scriptText.match(/=\s*(\{[\s\S]{200,}\})\s*;/);
+                            if (m) rawData = JSON.parse(m[1]);
+                        }
+                    } catch (_parseErr) {
+                        // Try a progressively smaller match
+                        try {
+                            const m = scriptText.match(/(\{[\s\S]{200,}\})/);
+                            if (m) rawData = JSON.parse(m[1]);
+                        } catch (_e2) { /* ignore */ }
+                    }
 
-                                            seenKeys.add(jobKey);
-                                            newJobsOnPage++;
-                                            totalSavedItems++;
+                    if (!rawData) continue;
 
-                                            results.push({
-                                                jobKey,
-                                                title: job.title || job.displayTitle || 'Unknown Title',
-                                                company: job.company || job.companyName || 'Unknown Company',
-                                                location: job.formattedLocation || job.location || 'Unknown Location',
-                                                salary: job.estimatedSalary || job.salarySnippet?.text || null,
-                                                link: `${baseUrl}/viewjob?jk=${jobKey}`,
-                                                companyRating: job.companyRating || null,
-                                                companyReviewCount: job.companyReviewCount || null,
-                                                pageNumber: pageNum + 1,
-                                                scrapedAt: new Date().toISOString(),
-                                                source: 'mosaic_json'
-                                            });
+                    const jobs: any[] =
+                        rawData?.metaData?.mosaicProviderJobCardsModel?.results ||
+                        rawData?.jobCards ||
+                        rawData?.results ||
+                        rawData?.props?.pageProps?.initialData?.jobCards ||
+                        [];
 
-                                            // Enqueue company details if requested
-                                            if (scrapeCompanyDetails) {
-                                                let companyUrl = job.companyOverviewLink || job.companyRelativeUrl || job.company?.overviewUrl;
+                    if (jobs.length === 0) continue;
 
-                                                // Fallback to constructing from name if no link provided
-                                                if (!companyUrl && job.companyName) {
-                                                    const companySlug = job.companyName.replace(/\s+/g, '-');
-                                                    companyUrl = `/cmp/${companySlug}`;
-                                                }
+                    mosaicExtracted = true;
+                    totalFoundOnPage = jobs.length;
+                    log.info(`✅ Mosaic JSON extracted ${jobs.length} jobs from "${src}".`);
 
-                                                if (companyUrl) {
-                                                    // Ensure absolute URL
-                                                    if (!companyUrl.startsWith('http')) {
-                                                        companyUrl = `${baseUrl}${companyUrl.startsWith('/') ? '' : '/'}${companyUrl}`;
-                                                    }
+                    for (const job of jobs) {
+                        if (totalSavedItems >= maxItems) break;
+                        const jobKey = job.jobkey || job.jk || job.jobKey;
+                        if (!jobKey || seenKeys.has(jobKey)) continue;
 
-                                                    if (!seenCompanies.has(companyUrl)) {
-                                                        if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
-                                                            seenCompanies.add(companyUrl);
-                                                            log.info(`Enqueuing company details (JSON): ${companyUrl}`);
-                                                            await crawler.addRequests([{
-                                                                url: companyUrl,
-                                                                userData: { label: 'COMPANY_DETAIL' }
-                                                            }]);
-                                                        } else {
-                                                            log.info(`Max company pages reached. Skipping: ${companyUrl}`);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                        seenKeys.add(jobKey);
+                        newJobsOnPage++;
+                        totalSavedItems++;
+
+                        // ── Taxonomy attributes (used for multiple fields below) ──
+                        const taxAttrs: any[] = job.taxonomyAttributes || job.jobMosaicAttributes?.categoryAttributes || [];
+
+                        // Helper: get all labels from a taxonomy category
+                        const getTaxValues = (categoryLabel: string): string[] => {
+                            const cat = taxAttrs.find((a: any) => (a.categoryLabel || a.label) === categoryLabel);
+                            return (cat?.attributes || cat?.values || []).map((v: any) => v.label || v).filter(Boolean);
+                        };
+
+                        // ── Age / posted relative text ──
+                        const jobAge: string | null =
+                            job.formattedRelativeTime || job.pubDate || job.relativeTime ||
+                            job.age || job.postingDateDisplayText ||
+                            job.hiringInsights?.age || job.hiringInsightsModel?.age || null;
+
+                        // ── Salary guide (structured) — check multiple nested paths ──
+                        const salaryRaw = job.estimatedSalary || job.salaryGuide || job.salaryRange ||
+                            job.salary?.estimatedSalary || job.salaryModel?.estimatedSalary || null;
+
+                        let salaryGuide: any = null;
+                        if (salaryRaw) {
+                            salaryGuide = {
+                                min: salaryRaw.min ?? salaryRaw.minimum ?? null,
+                                max: salaryRaw.max ?? salaryRaw.maximum ?? null,
+                                type: salaryRaw.type ?? salaryRaw.salaryType ?? null,
+                                currency: salaryRaw.currency ?? salaryRaw.currencyCode ?? null,
+                                text: salaryRaw.text ?? salaryRaw.formattedRange ?? job.salarySnippet?.text ?? null,
+                            };
+                        } else if (job.salarySnippet?.text) {
+                            salaryGuide = { min: null, max: null, type: null, currency: null, text: job.salarySnippet.text };
+                        }
+
+                        // Parse salary text if min/max are missing
+                        if (salaryGuide && salaryGuide.text && (salaryGuide.min === null || salaryGuide.max === null)) {
+                            const textValues = salaryGuide.text.replace(/,/g, '').match(/\d+/g);
+                            if (textValues && textValues.length > 0) {
+                                const nums = textValues.map(Number);
+                                if (nums.length >= 2) {
+                                    if (salaryGuide.min === null) salaryGuide.min = Math.min(...nums);
+                                    if (salaryGuide.max === null) salaryGuide.max = Math.max(...nums);
+                                } else if (nums.length === 1) {
+                                    if (salaryGuide.text.toLowerCase().includes('from') || salaryGuide.text.toLowerCase().includes('starting')) {
+                                        if (salaryGuide.min === null) salaryGuide.min = nums[0];
+                                    } else if (salaryGuide.text.toLowerCase().includes('up to')) {
+                                        if (salaryGuide.max === null) salaryGuide.max = nums[0];
+                                    } else {
+                                        if (salaryGuide.min === null) salaryGuide.min = nums[0];
+                                        if (salaryGuide.max === null) salaryGuide.max = nums[0];
                                     }
-                                } catch (e) { }
+                                }
+                            }
+                            // Guess type from text if missing
+                            if (!salaryGuide.type) {
+                                if (/year|annum/i.test(salaryGuide.text)) salaryGuide.type = 'year';
+                                else if (/month/i.test(salaryGuide.text)) salaryGuide.type = 'month';
+                                else if (/week/i.test(salaryGuide.text)) salaryGuide.type = 'week';
+                                else if (/hour/i.test(salaryGuide.text)) salaryGuide.type = 'hour';
+                                else if (/day/i.test(salaryGuide.text)) salaryGuide.type = 'day';
+                            }
+                            // Guess currency if missing
+                            if (!salaryGuide.currency) {
+                                if (salaryGuide.text.includes('₹')) salaryGuide.currency = 'INR';
+                                else if (salaryGuide.text.includes('$')) salaryGuide.currency = (country === 'CA' ? 'CAD' : (country === 'AU' ? 'AUD' : 'USD'));
+                                else if (salaryGuide.text.includes('£')) salaryGuide.currency = 'GBP';
+                                else if (salaryGuide.text.includes('€')) salaryGuide.currency = 'EUR';
+                                else {
+                                    const domainCurrencies: Record<string, string> = { 'in.indeed.com': 'INR', 'uk.indeed.com': 'GBP', 'ca.indeed.com': 'CAD', 'au.indeed.com': 'AUD' };
+                                    salaryGuide.currency = domainCurrencies[domain] || 'USD';
+                                }
                             }
                         }
+
+                        // ── Hiring demand ──
+                        const hiringDemand = {
+                            isUrgentHire: !!(job.hiringInsights?.isUrgentHire || job.hiringInsightsModel?.isUrgentHire || job.urgentHire),
+                            isHighVolumeHiring: !!(job.hiringInsights?.isHighVolumeHiring || job.hiringInsightsModel?.isHighVolumeHiring || job.highVolumeHiring),
+                        };
+
+                        // ── Emails — scan full description, snippet, and all text fields ──
+                        const rawDesc: string = [
+                            job.snippet, job.jobDescription, job.description,
+                            job.sanitizedHtml, job.descriptionHtml, job.formattedDescription,
+                            job.jobDescriptionText, job.snippetText
+                        ].filter(Boolean).join(' ');
+                        const emailMatches: string[] = rawDesc.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+                        const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+                        const phoneMatches = rawDesc.match(phoneRegex) || [];
+
+                        // ── Job type — structured field wins; fall back to taxonomy (job-types, job-types-cc) ──
+                        const jobTypeFromTax = getTaxValues('job-types')[0] || getTaxValues('job-types-cc')[0] || null;
+                        const jobTypeVal: string | null =
+                            job.jobType ||
+                            (Array.isArray(job.jobTypes) ? job.jobTypes[0] : null) ||
+                            job.employmentType ||
+                            jobTypeFromTax ||
+                            null;
+
+                        // ── Benefits — from job.benefits or taxonomy ──
+                        const benefitsFromTax = getTaxValues('benefits');
+                        const benefitsVal: string[] =
+                            (Array.isArray(job.benefits) && job.benefits.length > 0 ? job.benefits :
+                                Array.isArray(job.benefitsModel?.benefitsList) && job.benefitsModel.benefitsList.length > 0 ? job.benefitsModel.benefitsList :
+                                    benefitsFromTax.length > 0 ? benefitsFromTax : []);
+
+                        // Snippet fallback for benefits
+                        if (benefitsVal.length === 0 && job.snippet) {
+                            const lowSnippet = job.snippet.toLowerCase();
+                            if (lowSnippet.includes('insurance')) benefitsVal.push('Insurance');
+                            if (lowSnippet.includes('health')) benefitsVal.push('Health Care');
+                            if (lowSnippet.includes('401k') || lowSnippet.includes('retirement')) benefitsVal.push('Retirement Plan');
+                            if (lowSnippet.includes('paid time off') || lowSnippet.includes('pto')) benefitsVal.push('Paid Time Off');
+                        }
+
+                        // ── Shift and schedule — from taxonomy ──
+                        const scheduleFromTax = getTaxValues('schedules');
+                        const shiftsFromTax = getTaxValues('shifts');
+                        const shiftAndScheduleVal: string | null =
+                            job.shiftAndSchedule ||
+                            job.shiftAndScheduleModel?.shiftAndScheduleText ||
+                            (scheduleFromTax.length > 0 ? scheduleFromTax.join(', ') : null) ||
+                            (shiftsFromTax.length > 0 ? shiftsFromTax.join(', ') : null) ||
+                            null;
+
+                        // ── Working system — from taxonomy or direct field ──
+                        const workingSystemVal: string | null =
+                            job.workSchedule || job.workingSystem ||
+                            job.workModel ||
+                            getTaxValues('remote')[0] ||
+                            getTaxValues('work-location')[0] ||
+                            getTaxValues('work-settings')[0] ||
+                            null;
+
+                        // ── Occupation — direct field or taxonomy ──
+                        let occupationVal: string | null =
+                            job.occupation || job.occupationType ||
+                            job.jobCategory || job.category ||
+                            job.taxonomyAttributes?.find((a: any) => /occupation|industry|category/i.test(a.label || a.categoryLabel))?.attributes?.[0]?.label ||
+                            getTaxValues('occupation')[0] || getTaxValues('industry')[0];
+
+                        if (!occupationVal) {
+                            const title = (job.displayTitle || job.title || '').toLowerCase();
+                            if (title.match(/software|engineer|developer|tech|it|data|programmer|cloud/)) occupationVal = 'Engineering & Technology';
+                            else if (title.match(/nurse|health|medical|doctor|clinical|care/)) occupationVal = 'Healthcare';
+                            else if (title.match(/sales|account|marketing|business development/)) occupationVal = 'Sales & Marketing';
+                            else if (title.match(/manager|director|lead|supervisor/)) occupationVal = 'Management';
+                            else if (title.match(/design|creative|artist|ui|ux/)) occupationVal = 'Design & Creative';
+                            else if (title.match(/customer|support|client/)) occupationVal = 'Customer Service';
+                            else if (title.match(/finance|accountant|banking|tax/)) occupationVal = 'Finance & Accounting';
+                            else if (title.match(/hr|human resources|recruiter/)) occupationVal = 'Human Resources';
+                            else if (title.match(/legal|lawyer|compliance/)) occupationVal = 'Legal';
+                            else if (title.match(/driver|delivery|logistics|warehouse/)) occupationVal = 'Logistics & Transport';
+                        }
+
+                        // ── Description HTML — multiple paths ──
+                        const descHtml: string | null =
+                            job.sanitizedHtml || job.descriptionHtml ||
+                            job.formattedDescription || job.htmlDescriptionModel?.htmlContent ||
+                            job.htmlDescription || null;
+
+                        // ── Company header URL — multiple paths ──
+                        const companyHeaderUrlVal: string | null =
+                            job.companyHeaderImageUrl ||
+                            job.companyBrandingAttributes?.headerImageUrl ||
+                            job.companyBrandingAttributes?.logoUrl ||
+                            job.branding?.headerImageUrl ||
+                            job.headerImageUrl ||
+                            job.companyProfileAttributes?.headerImageUrl ||
+                            null;
+
+                        // ── Rating — try all known paths; ensure score/count are real values ──
+                        let ratingVal: { score: number | null, count: number | null } | null = null;
+                        const rScore = job.ratingModel?.rating ?? job.companyRating ?? job.rating?.score ?? null;
+                        const rCount = job.ratingModel?.count ?? job.companyReviewCount ?? job.rating?.count ?? null;
+                        if (rScore != null || rCount != null) {
+                            ratingVal = { score: rScore ?? null, count: rCount ?? null };
+                        }
+
+                        // ── Locale — direct field or from job's location language hint ──
+                        const localeVal: string | null =
+                            job.locale || job.language || job.searchLocale ||
+                            job.jobLocationModel?.countryCode || null;
+
+                        // ── numOfCandidates ──
+                        const numCandidates: number | null =
+                            job.numOfCandidates ?? job.candidateCount ??
+                            job.hiringInsights?.numApplicants ?? job.hiringInsightsModel?.numOfCandidates ??
+                            (job.hiringInsights?.hiringMultipleCandidates ? 2 : null);
+
+                        // ── Requirements — direct or formatted ──
+                        const edu = getTaxValues('education');
+                        const exp = getTaxValues('experience');
+                        const quals = job.qualifications || job.qualificationsModel?.qualifications ||
+                            job.jobMosaicAttributes?.qualificationsAttributes || [];
+                        const qualsText = Array.isArray(quals) ? (typeof quals === 'string' ? quals : quals.map((q: any) => q.label || q).filter(Boolean).join(', ')) : (typeof quals === 'string' ? quals : '');
+
+                        const requirementsVal: string | null =
+                            job.requirements || job.formattedRequirements ||
+                            job.requirementsModel?.requirements ||
+                            (qualsText.length > 2 ? qualsText : null) ||
+                            (() => {
+                                const desc = (job.jobDescriptionText || job.snippet || '').split('\n');
+                                const reqLines = desc.filter((l: string) => /require|must have|skill|experience|qualifi|proficient|knowledge/i.test(l)).slice(0, 5);
+                                return reqLines.length > 0 ? reqLines.join(', ') : null;
+                            })() ||
+                            (edu.length > 0 ? `Education: ${edu.join(', ')}` : '') +
+                            (exp.length > 0 ? ` Experience: ${exp.join(', ')}` : '') || null;
+
+                        // ── Description-based Contact Extraction ──
+                        const descFull = `${job.jobDescriptionText || ''} ${job.snippet || ''}`;
+                        const descEmails = descFull.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+                        const descPhones = descFull.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || [];
+                        const validatedDescPhones = descPhones.filter(p => p.replace(/\D/g, '').length >= 7 && p.replace(/\D/g, '').length <= 15);
+
+
+                        // ── Company logo & URL (from Mosaic JSON) ──
+                        const companyLogoUrlVal: string | null =
+                            job.companyLogoUrl ||
+                            job.companyBrandingAttributes?.logoUrl ||
+                            job.companyBrandingAttributes?.squareLogoUrl ||
+                            job.companyBrandingAttributes?.headerLogoUrl ||
+                            job.squareLogoUrl || null;
+
+                        const companyUrlVal: string | null = job.companyOverviewLink
+                            ? (job.companyOverviewLink.startsWith('http') ? job.companyOverviewLink : `${baseUrl}${job.companyOverviewLink.startsWith('/') ? '' : '/'}${job.companyOverviewLink}`)
+                            : (job.companyRelativeUrl
+                                ? `${baseUrl}${job.companyRelativeUrl.startsWith('/') ? '' : '/'}${job.companyRelativeUrl}`
+                                : (job.company || job.companyName ? `${baseUrl}/cmp/${(job.company || job.companyName).replace(/\s+/g, '-')}` : null));
+
+                        const jobData = {
+                            dataType: 'job' as const,
+                            jobKey,
+                            jobUrl: `${baseUrl}/viewjob?jk=${jobKey}`,
+                            jobTitle: job.displayTitle || job.title || 'Unknown Title',
+                            companyName: job.companyName || job.company || 'Unknown Company',
+                            location: job.formattedLocation || job.jobLocationModel?.formattedLocation || job.location || 'Unknown Location',
+                            salary: job.salarySnippet?.text || job.estimatedSalary?.text || job.salarySnippet?.label || null,
+                            salaryGuide,
+                            companyLogoUrl: (companyLogoUrlVal && companyLogoUrlVal.includes('placeholder')) ? null : companyLogoUrlVal,
+                            companyUrl: companyUrlVal,
+                            age: jobAge,
+                            datePublished: job.createDate ? new Date(job.createDate).toISOString()
+                                : (job.datePosted ? new Date(job.datePosted).toISOString() : null),
+                            postedToday: !!(
+                                (jobAge && /just\s*posted|today/i.test(jobAge)) ||
+                                job.hiringInsights?.isPostedToday ||
+                                job.hiringInsightsModel?.isPostedToday
+                            ),
+                            expired: job.expired ?? false,
+                            link: `${baseUrl}/viewjob?jk=${jobKey}`,
+                            applyUrl: job.applyUrl || job.applyLink || job.thirdPartyApplyUrl || null,
+                            jobType: jobTypeVal,
+                            isRemote: !!(
+                                job.remoteWork || job.remoteLocation ||
+                                job.jobLocationModel?.remoteWorkModel ||
+                                (job.formattedLocation && /remote/i.test(job.formattedLocation))
+                            ),
+                            occupation: occupationVal,
+                            attributes: taxAttrs.map((a: any) => ({
+                                label: a.categoryLabel || a.label || '',
+                                values: (a.attributes || a.values || []).map((v: any) => v.label || v),
+                            })),
+                            benefits: benefitsVal,
+                            workingSystem: workingSystemVal,
+                            shiftAndSchedule: shiftAndScheduleVal,
+                            descriptionText: job.snippet || job.jobDescription || null,
+                            descriptionHtml: descHtml || (job.snippet ? `<p>${job.snippet}</p>` : null),
+                            companyHeaderUrl: companyHeaderUrlVal,
+                            rating: ratingVal,
+                            hiringDemand,
+                            emails: Array.from(new Set([...emailMatches, ...descEmails])),
+                            phones: Array.from(new Set([...phoneMatches, ...validatedDescPhones])),
+                            requirements: requirementsVal || null,
+                            numOfCandidates: numCandidates,
+                            locale: localeVal || country,
+                        };
+
+                        if (scrapeCompanyDetails && companyUrlVal) {
+                            if (companyCache.has(companyUrlVal)) {
+                                // Already cached, merge and push now
+                                const companyInfo = companyCache.get(companyUrlVal);
+                                const fullJob = {
+                                    ...jobData,
+                                    ...companyInfo,
+                                    // Also merge company-level contacts into job fields
+                                    emails: Array.from(new Set([...(jobData.emails || []), ...(companyInfo.companyEmails || [])])),
+                                    phones: Array.from(new Set([...(jobData.phones || []), ...(companyInfo.companyPhones || [])]))
+                                };
+                                await Dataset.pushData(fullJob);
+                                totalJobsScraped++;
+                                totalJobsWithMetadata++;
+                                // Charge as Premium
+                                await chargeAndCheck({ eventName: 'job-premium-scraped', count: 1 });
+                            } else {
+                                // Buffer job and enqueue company detail if not already seen
+                                if (!pendingJobs.has(companyUrlVal)) {
+                                    pendingJobs.set(companyUrlVal, []);
+                                }
+                                pendingJobs.get(companyUrlVal)!.push(jobData);
+
+                                if (!seenCompanies.has(companyUrlVal)) {
+                                    seenCompanies.add(companyUrlVal);
+                                    await requestQueue.addRequest({
+                                        url: companyUrlVal,
+                                        uniqueKey: companyUrlVal,
+                                        userData: { label: 'COMPANY_DETAIL', companyUrl: companyUrlVal, jobData },
+                                    });
+                                }
+                            }
+                        } else {
+                            // No company details requested, push immediately
+                            await Dataset.pushData(jobData);
+                            totalJobsScraped++;
+                            // Charge as Standard
+                            await chargeAndCheck({ eventName: 'job-standard-scraped', count: 1 });
+                        }
+
+
                     }
+                    break;
                 }
-            } catch (jsonErr: any) {
-                log.error(`Deep JSON extraction failed: ${jsonErr.message}`);
+            }
+        } catch (jsonErr: any) {
+            log.warning(`Mosaic JSON extraction failed: ${jsonErr.message}`);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // FALLBACK: HTML card extraction — only runs if Mosaic JSON failed.
+        // ─────────────────────────────────────────────────────────────────────
+        if (!mosaicExtracted) {
+            log.info('Mosaic JSON not found — falling back to HTML card extraction.');
+            if (jobCards.length === 0) {
+                log.info(`HTML Head Snippet: ${$.html().substring(0, 800).replace(/\s+/g, ' ')}`);
             }
         }
 
-        // Standard HTML Extraction (only if JSON didn't already find anything)
-        if (newJobsOnPage === 0) {
+        if (!mosaicExtracted && newJobsOnPage === 0) {
             for (const element of jobCards.toArray()) {
                 if (totalSavedItems >= maxItems) break;
 
@@ -482,69 +1196,212 @@ const crawler = new CheerioCrawler({
                         card.find('.jobTitle').text().trim();
                     const company = card.find('[data-testid="company-name"]').text().trim();
                     const jobLocation = card.find('[data-testid="text-location"]').text().trim();
-                    const salary = card.find('.salary-snippet-container').text().trim() || null;
+                    const salary = card.find('.salary-snippet-container').text().trim() ||
+                        card.find('.salarySnippet').text().trim() ||
+                        card.find('[data-testid="attribute_snippet_testid"]:contains("$")').text().trim() ||
+                        card.find('[data-testid="attribute_snippet_testid"]:contains("₹")').text().trim() ||
+                        null;
+                    // Extract posted date - use only targeted selectors, then regex fallback
+                    let postedAt = '';
+
+                    // Strategy 1: Known CSS selectors for the posted date element
+                    const dateSelectors = [
+                        '.date',
+                        '.underflow-relative-time',
+                        'span[data-testid="myJobsStateDate"]',
+                        '[data-testid="job-age"]',
+                        '.result-footer .date',
+                    ];
+                    for (const sel of dateSelectors) {
+                        const text = card.find(sel).text().trim();
+                        if (text && /\d+\s*(day|hour|minute|week|month)s?\s*ago|just\s*posted|today|active/i.test(text)) {
+                            postedAt = text;
+                            break;
+                        }
+                    }
+
+                    // Strategy 2: Regex scan of the entire card HTML for date-like text
+                    if (!postedAt) {
+                        const cardText = card.text() || '';
+                        const agoMatch = cardText.match(/(?:posted\s*)?(\d+\+?\s*(?:day|hour|minute|week|month)s?\s*ago)/i);
+                        if (agoMatch) {
+                            postedAt = agoMatch[0].trim();
+                        } else {
+                            const otherMatch = cardText.match(/(just\s*posted|today|active\s*\d+\s*days?\s*ago)/i);
+                            if (otherMatch) {
+                                postedAt = otherMatch[0].trim();
+                            }
+                        }
+                    }
 
                     seenKeys.add(jobKey);
                     newJobsOnPage++;
                     totalSavedItems++;
 
-                    results.push({
-                        jobKey,
-                        title: jobTitle,
-                        company,
-                        location: jobLocation,
-                        salary,
-                        link: fullLink,
-                        pageNumber: pageNum + 1,
-                        scrapedAt: new Date().toISOString(),
+                    // ── Urgency / volume badges from HTML card ──
+                    const isUrgentHire = /urgently\s*hiring/i.test(card.text());
+                    const isHighVolumeHiring = /hiring\s*multiple|high\s*volume/i.test(card.text());
+                    const isPostedToday = /just\s*posted|today/i.test(postedAt);
+                    const isRemote = /remote/i.test(jobLocation);
 
+                    // ── Job type badge from HTML card — iterate to avoid CSS contamination ──
+                    let jobTypeHtml: string | null = null;
+                    card.find('[data-testid="attribute_snippet_testid"], .attribute_snippet').each((_, el) => {
+                        const txt = $(el).clone().children().remove().end().text().trim();
+                        if (/^(full[- ]?time|part[- ]?time|contract|temporary|intern|casual|permanent|commission)$/i.test(txt)) {
+                            jobTypeHtml = txt;
+                            return false; // break
+                        }
+                        return true;
                     });
 
-                    // Enqueue company details if requested
-                    if (scrapeCompanyDetails) {
-                        let companyLink = card.find('[data-testid="company-name"] a, a[data-testid="company-name"]').attr('href');
+                    // ── Emails from snippet ──
+                    const snippetText = card.find('.job-snippet, .summary').text() || '';
+                    const emailMatches = snippetText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+                    const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+                    const phoneMatches = snippetText.match(phoneRegex) || [];
 
-                        // Fallback 1: Try broader selector
-                        if (!companyLink) {
-                            companyLink = card.find('.companyName a').attr('href');
-                        }
-
-                        // Fallback 2: Construct from company name
-                        if (!companyLink && company) {
-                            // Basic slugification - can be improved if needed
-                            const companySlug = company.replace(/\s+/g, '-');
-                            companyLink = `/cmp/${companySlug}`;
-                        }
-
-                        if (companyLink) {
-                            // Ensure valid URL format
-                            const absoluteCompanyLink = companyLink.startsWith('http')
-                                ? companyLink
-                                : `${baseUrl}${companyLink.startsWith('/') ? '' : '/'}${companyLink}`;
-
-                            if (!seenCompanies.has(absoluteCompanyLink)) {
-                                if (maxCompanyPages === 0 || seenCompanies.size < maxCompanyPages) {
-                                    seenCompanies.add(absoluteCompanyLink);
-                                    log.info(`Enqueuing company details (HTML): ${absoluteCompanyLink}`);
-                                    await crawler.addRequests([{
-                                        url: absoluteCompanyLink,
-                                        userData: { label: 'COMPANY_DETAIL' }
-                                    }]);
-                                } else {
-                                    log.info(`Max company pages reached. Skipping: ${absoluteCompanyLink}`);
-                                }
+                    // ── Salary guide for HTML fallback ──
+                    let salaryGuideHtml: any = null;
+                    if (salary) {
+                        salaryGuideHtml = { min: null, max: null, type: null, currency: null, text: salary };
+                        const nums = salary.replace(/,/g, '').match(/\d+/g);
+                        if (nums && nums.length > 0) {
+                            const n = nums.map(Number);
+                            if (n.length >= 2) {
+                                salaryGuideHtml.min = Math.min(...n);
+                                salaryGuideHtml.max = Math.max(...n);
+                            } else {
+                                salaryGuideHtml.min = n[0];
+                                salaryGuideHtml.max = n[0];
                             }
-                        } else {
-                            log.warning(`No company link found or constructed in HTML for job: ${company}`);
                         }
+                        if (/year|annum/i.test(salary)) salaryGuideHtml.type = 'year';
+                        else if (/month/i.test(salary)) salaryGuideHtml.type = 'month';
+                        else if (/week/i.test(salary)) salaryGuideHtml.type = 'week';
+                        else if (/hour/i.test(salary)) salaryGuideHtml.type = 'hour';
                     }
+
+                    // ── Try to find occupation or benefits in snippet ──
+                    const snippetLower = snippetText.toLowerCase();
+                    const titleLower = jobTitle.toLowerCase();
+                    let occupationHtml: string | null = null;
+                    if (titleLower.match(/software|engineer|developer|tech|it|data/)) occupationHtml = 'Engineering & Technology';
+                    else if (titleLower.match(/nurse|health|medical|doctor|care/)) occupationHtml = 'Healthcare';
+                    else if (titleLower.match(/sales|marketing/)) occupationHtml = 'Sales & Marketing';
+                    else if (titleLower.match(/manager|director/)) occupationHtml = 'Management';
+                    else if (titleLower.match(/design|creative/)) occupationHtml = 'Design & Creative';
+                    else if (titleLower.match(/customer|support/)) occupationHtml = 'Customer Service';
+                    else if (titleLower.match(/finance|accountant/)) occupationHtml = 'Finance & Accounting';
+                    else if (titleLower.match(/driver|delivery|warehouse/)) occupationHtml = 'Logistics & Transport';
+
+                    if (!occupationHtml && (snippetLower.includes('developer') || snippetLower.includes('engineer'))) occupationHtml = 'Engineering';
+                    else if (!occupationHtml && snippetLower.includes('manager')) occupationHtml = 'Management';
+                    else if (!occupationHtml && snippetLower.includes('sales')) occupationHtml = 'Sales';
+
+                    const benefitsHtml: string[] = [];
+                    if (snippetLower.includes('insurance')) benefitsHtml.push('Insurance');
+                    if (snippetLower.includes('health')) benefitsHtml.push('Health');
+                    if (snippetLower.includes('401k') || snippetLower.includes('pension')) benefitsHtml.push('Retirement');
+
+                    const companyLogoUrlHtml = card.find('img.job-search-6-brand-logo-img').attr('src') ||
+                        card.find('img[alt*="logo" i]').attr('src') || null;
+                    const companyUrlHtml = card.find('a[data-testid="company-name"]').attr('href') ||
+                        card.find('.companyName a').attr('href') ||
+                        (company ? `/cmp/${company.replace(/\s+/g, '-')}` : null);
+                    const fullCompanyUrlHtml = companyUrlHtml ? (companyUrlHtml.startsWith('http') ? companyUrlHtml : `${baseUrl}${companyUrlHtml.startsWith('/') ? '' : '/'}${companyUrlHtml}`) : null;
+
+                    const descEmailsHtml = snippetText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+                    const descPhonesHtml = snippetText.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || [];
+                    const validatedDescPhonesHtml = descPhonesHtml.filter(p => p.replace(/\D/g, '').length >= 7 && p.replace(/\D/g, '').length <= 15);
+                    const guessedReqs = (snippetText || '').split(/[;.]/).filter(s => /require|must|skill|exp|qualif/i.test(s)).join(', ').trim();
+
+                    const jobData = {
+                        dataType: 'job' as const,
+                        jobKey,
+                        jobUrl: fullLink,
+                        jobTitle,
+                        companyName: company,
+                        location: jobLocation,
+                        salary,
+                        salaryGuide: salaryGuideHtml,
+                        companyLogoUrl: companyLogoUrlHtml,
+                        companyUrl: fullCompanyUrlHtml,
+                        age: postedAt,
+                        datePublished: null,
+                        postedToday: isPostedToday,
+                        expired: false,
+                        link: fullLink,
+                        applyUrl: null,
+                        jobType: jobTypeHtml,
+                        isRemote,
+                        occupation: occupationHtml,
+                        attributes: [],
+                        benefits: benefitsHtml.length > 0 ? benefitsHtml : [],
+                        workingSystem: isRemote ? 'Remote' : null,
+                        shiftAndSchedule: null,
+                        descriptionText: snippetText || null,
+                        descriptionHtml: null,
+                        companyHeaderUrl: null,
+                        rating: null,
+                        hiringDemand: { isUrgentHire, isHighVolumeHiring },
+                        pageNumber: pageNum + 1,
+                        source: 'html',
+                        emails: Array.from(new Set([...emailMatches, ...descEmailsHtml])),
+                        phones: Array.from(new Set([...phoneMatches, ...validatedDescPhonesHtml])),
+                        requirements: guessedReqs || null,
+                        numOfCandidates: null,
+                        locale: country,
+                    };
+
+                    if (scrapeCompanyDetails && fullCompanyUrlHtml) {
+                        if (companyCache.has(fullCompanyUrlHtml)) {
+                            const companyInfo = companyCache.get(fullCompanyUrlHtml);
+                            const fullJob = {
+                                ...jobData,
+                                ...companyInfo,
+                                // Also merge company-level contacts into job fields
+                                emails: Array.from(new Set([...(jobData.emails || []), ...(companyInfo.companyEmails || [])])),
+                                phones: Array.from(new Set([...(jobData.phones || []), ...(companyInfo.companyPhones || [])]))
+                            };
+                            await Dataset.pushData(fullJob);
+                            totalJobsScraped++;
+                            totalJobsWithMetadata++;
+                            // Charge as Premium
+                            await chargeAndCheck({ eventName: 'job-premium-scraped', count: 1 });
+                        } else {
+                            if (!pendingJobs.has(fullCompanyUrlHtml)) {
+                                pendingJobs.set(fullCompanyUrlHtml, []);
+                            }
+                            pendingJobs.get(fullCompanyUrlHtml)!.push(jobData);
+
+                            if (company && !seenCompanies.has(fullCompanyUrlHtml)) {
+                                seenCompanies.add(fullCompanyUrlHtml);
+                                await requestQueue.addRequest({
+                                    url: fullCompanyUrlHtml,
+                                    uniqueKey: fullCompanyUrlHtml,
+                                    userData: { label: 'COMPANY_DETAIL', companyUrl: fullCompanyUrlHtml, jobData },
+                                });
+                            }
+                        }
+                    } else {
+                        await Dataset.pushData(jobData);
+                        totalJobsScraped++;
+                        // Charge as Standard (No metadata found/requested)
+                        await chargeAndCheck({ eventName: 'job-standard-scraped', count: 1 });
+                    }
+
+
                 } catch (err: any) {
                     log.error(`Extraction error: ${err.message}`);
                 }
             }
         }
 
-        // If after both attempts we still have 0, and it's Page 2+, it's a hard block
+        if (newJobsOnPage > 0) {
+            session?.markGood();
+        }
+
         if (newJobsOnPage === 0 && pageNum > 0 && jobCards.length === 0) {
             log.warning(`Indeed Stealth Block on Page ${pageNum + 1}. No cards in HTML or Mosaic JSON.`);
             session?.retire();
@@ -552,48 +1409,31 @@ const crawler = new CheerioCrawler({
         }
 
         const skippedJobs = totalFoundOnPage - newJobsOnPage;
-
         if (totalFoundOnPage > 0) {
             log.info(`Page ${pageNum + 1}: Found ${totalFoundOnPage} jobs. ${newJobsOnPage} new, ${skippedJobs} already seen.`);
         }
 
-        if (results.length > 0) {
-            await Dataset.pushData(results);
-            session?.markGood();
-        }
+
 
         log.info(`Progress: ${totalSavedItems}/${maxItems} unique jobs collected.`);
 
-        // Pagination Logic - Avoid login wall on page 2+
-        // Distinguish between finding NO jobs (end of search) and finding only DUPLICATES (overlap)
         let nextDuplicateCount = duplicateCount;
-
         if (totalFoundOnPage > 0 && newJobsOnPage === 0) {
             nextDuplicateCount++;
         } else if (newJobsOnPage > 0) {
-            nextDuplicateCount = 0; // Reset if we find even one new job
+            nextDuplicateCount = 0;
         }
 
-        // Hard stop if we find NO jobs at all for 3 pages (likely end of results)
         if (totalFoundOnPage === 0 && pageNum > 0) {
             const emptyPageCount = (request.userData.emptyPageCount || 0) + 1;
-            if (emptyPageCount >= 3) {
-                log.info(`Stopping query ${sessionKey} - End of results reached (3 consecutive empty pages).`);
-                return;
-            }
+            if (emptyPageCount >= 3) return;
             request.userData.emptyPageCount = emptyPageCount;
         }
 
-        // Lenient stop for duplicates (10 pages) to handle overlapping queries in bulk
-        if (nextDuplicateCount >= 10) {
-            log.info(`Stopping query ${sessionKey} due to Search Exhaustion (10 pages with 0 new jobs, but duplicates found).`);
-            return;
-        }
+        if (nextDuplicateCount >= 10) return;
 
         if (totalSavedItems < maxItems && (totalFoundOnPage > 0 || pageNum < 5) && pageNum < 100) {
             const nextStart = (pageNum + 1) * 10;
-
-            // Safely build next URL by taking the startUrl and updating the 'start' param
             const nextUrlObj = new URL(startUrl);
             nextUrlObj.searchParams.set('start', nextStart.toString());
             const nextUrl = nextUrlObj.toString();
@@ -622,6 +1462,7 @@ const crawler = new CheerioCrawler({
     },
 });
 
+
 try {
     log.info('Run started. Waiting for completion...');
     await crawler.run();
@@ -629,37 +1470,28 @@ try {
     log.error('Crawler failed:', { err });
 }
 
-log.info(`[SUMMARY] Finished. Total jobs: ${totalSavedItems}. Total company profiles scraped: ${scrapedCompanyCount}.`);
-
-// Monetization Logic - estimate run cost
-const pricePerJob = 0.001; // $1 per 1000 jobs
-const pricePerCompany = 0.005; // $5 per 1000 companies
-const totalCost = (totalSavedItems * pricePerJob) + (scrapedCompanyCount * pricePerCompany);
-log.info(`[MONETIZATION] Estimated Run Cost: $${totalCost.toFixed(4)} USD (Jobs: $${(totalSavedItems * pricePerJob).toFixed(4)} + Companies: $${(scrapedCompanyCount * pricePerCompany).toFixed(4)})`);
-
-// Info about datasets
-if (scrapedCompanyCount > 0) {
-    log.info(`📊 [DATASETS] Jobs saved to default dataset. Company profiles saved to "company-details" dataset.`);
-    if (Actor.isAtHome()) {
-        log.info(`👉 To view company profiles in Apify UI: Go to Storage tab → Datasets → "company-details"`);
-    }
+log.info(`[SUMMARY] Finished. Total jobs pushed: ${totalJobsScraped}.`);
+log.info(`[INFO] Jobs with merged company details: ${totalJobsWithMetadata}.`);
+if (totalJobsScraped > totalJobsWithMetadata) {
+    log.info(`[INFO] Jobs with only basic details (meta-scraping failed/skipped): ${totalJobsScraped - totalJobsWithMetadata}.`);
 }
 
 // Persist results and state
 await Actor.setValue('SEEN_KEYS', Array.from(seenKeys));
 
-// Export to jobs.json for local convenience
-if (!Actor.isAtHome()) {
-    try {
-        const dataset = await Dataset.open();
-        const { items } = await dataset.getData();
-        fs.writeFileSync(path.join(process.cwd(), 'jobs.json'), JSON.stringify(items, null, 2));
-        log.info(`Local export complete: ${items.length} jobs saved.`);
-    } catch (e) {
-        log.error('Failed to export jobs.json locally.');
+// Cleanup: Push any jobs that were waiting for companies that failed or timed out
+if (pendingJobs.size > 0) {
+    const remainingJobs: any[] = [];
+    for (const jobs of pendingJobs.values()) {
+        remainingJobs.push(...jobs);
+    }
+    if (remainingJobs.length > 0) {
+        log.info(`[CLEANUP] Pushing ${remainingJobs.length} jobs that were waiting for metadata (failed/timed out).`);
+        await Dataset.pushData(remainingJobs);
+        totalJobsScraped += remainingJobs.length;
+        // Cleanup jobs are pushed without company details, so charge as Standard
+        await chargeAndCheck({ eventName: 'job-standard-scraped', count: remainingJobs.length });
     }
 }
 
-
-
-await Actor.exit();  
+await Actor.exit(); 

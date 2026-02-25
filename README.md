@@ -14,7 +14,6 @@ This scraper is specifically tuned for high-volume Indeed scraping (IN / US / UK
 - [Crawlee documentation](https://crawlee.dev)
 - [Indeed Scraper Best Practices](https://apify.com/web-scraping/indeed-scraper)
 
-
 ## Getting started
 
 For complete information [see this article](https://docs.apify.com/platform/actors/development#build-actor-locally). To run the Actor use the following command:

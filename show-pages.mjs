@@ -4,7 +4,7 @@ const data = JSON.parse(fs.readFileSync('jobs.json', 'utf8'));
 
 // Group by page
 const byPage = {};
-data.forEach(job => {
+data.forEach((job) => {
     const page = job.pageNumber || 'No Page Info';
     if (!byPage[page]) byPage[page] = [];
     byPage[page].push(job);
@@ -21,7 +21,7 @@ console.log('\n╔════════════════════�
 console.log('║              INDEED JOBS - PAGE-WISE BREAKDOWN                 ║');
 console.log('╚════════════════════════════════════════════════════════════════╝\n');
 
-pages.forEach(page => {
+pages.forEach((page) => {
     console.log(`\n${'='.repeat(70)}`);
     console.log(`  PAGE ${page} - ${byPage[page].length} jobs`);
     console.log('='.repeat(70));

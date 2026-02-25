@@ -1,0 +1,57 @@
+{
+    "actorSpecification": 1,
+    "title": "Indeed Scraper - Jobs",
+    "description": "Job listings scraped from Indeed with merged company details",
+    "views": {
+        "jobsOverview": {
+            "title": "Jobs Overview",
+            "transformation": {
+                "fields": [
+                    "jobKey",
+                    "jobTitle",
+                    "companyName",
+                    "location",
+                    "salary",
+                    "salaryGuide",
+                    "jobType",
+                    "isRemote",
+                    "occupation",
+                    "age",
+                    "datePublished",
+                    "postedToday",
+                    "expired",
+                    "applyUrl",
+                    "jobUrl",
+                    "link",
+                    "descriptionText",
+                    "descriptionHtml",
+                    "benefits",
+                    "attributes",
+                    "workingSystem",
+                    "shiftAndSchedule",
+                    "requirements",
+                    "hiringDemand",
+                    "rating",
+                    "emails",
+                    "phones",
+                    "companyUrl",
+                    "companyLogoUrl",
+                    "companyHeaderUrl",
+                    "companyBriefDescription",
+                    "companyIndustry",
+                    "companyNumEmployees",
+                    "companyRevenue",
+                    "companyFounded",
+                    "corporateWebsite",
+                    "locale",
+                    "companyScrapedAt",
+                    "scrapedAt",
+                    "source"
+                ]
+            },
+            "display": {
+                "component": "table"
+            }
+        }
+    }
+}

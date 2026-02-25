@@ -1,9 +1,9 @@
 {
 	"actorSpecification": 1,
 	"name": "indeed-scraper",
-	"title": "Standby Actor in TypeScript",
-	"description": "Standby Actor in TypeScript.",
-	"version": "0.0",
+	"title": "Indeed Job Scraper",
+	"description": "Scrape Indeed job listings with comprehensive company details merged into each record.",
+	"version": "0.1",
 	"buildTag": "latest",
 	"usesStandbyMode": false,
 	"meta": {
@@ -12,24 +12,11 @@
 	},
 	"dockerfile": "../Dockerfile",
 	"input": "./input_schema.json",
+	"monetization": {
+		"pricingModel": "PAY_PER_EVENT",
+		"payPerEvent": "./pay_per_event.json"
+	},
 	"storages": {
-		"dataset": {
-			"actorSpecification": 1,
-			"title": "Job Listings",
-			"views": {
-				"overview": {
-					"title": "Overview",
-					"transformation": {
-						"fields": [
-							"company",
-							"title",
-							"location",
-							"salary",
-							"link"
-						]
-					}
-				}
-			}
-		}
+		"dataset": "./dataset_schema.json"
 	}
 }
