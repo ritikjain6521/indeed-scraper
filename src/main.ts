@@ -42,6 +42,7 @@ await Actor.init();
 let totalJobsScraped = 0;
 let totalCompaniesScraped = 0;
 let totalJobsWithMetadata = 0;
+let totalDuplicatesSkipped = 0;
 
 // Credit check helper
 const chargeAndCheck = async (options: { eventName: string, count: number }) => {
@@ -458,7 +459,11 @@ const crawler = new CheerioCrawler({
                         const lks = deepFind(data, ['links', 'socialLinks', 'contactLinks', 'externalLinks', 'socialMedia', 'companyLinks']);
                         if (lks && typeof lks === 'object') {
                             if (!companyDetails.companyLinks.corporateWebsite) {
-                                companyDetails.companyLinks.corporateWebsite = lks.website || lks.corporateWebsite || lks.url || lks.corporateWebsiteUrl || lks.webUrl || null;
+                                const ws = lks.website || lks.corporateWebsite || lks.url || lks.corporateWebsiteUrl || lks.webUrl || null;
+                                const isIndeed = ws?.toLowerCase().includes('indeed') && (ws?.toLowerCase().includes('.jobs') || ws?.toLowerCase().includes('events') || ws?.toLowerCase().includes('branding') || ws?.toLowerCase().includes('design'));
+                                if (ws && !isIndeed) {
+                                    companyDetails.companyLinks.corporateWebsite = ws;
+                                }
                             }
                         }
 
@@ -591,13 +596,18 @@ const crawler = new CheerioCrawler({
 
             // Founded year
             if (!companyDetails.companyFounded) {
-                companyDetails.companyFounded =
+                const rawFounded =
                     extractText('[data-testid="companyInfo-founded"]') ||
                     extractText('[data-testid="cmp-companyInfo-founded"]') ||
                     extractText('li:contains("Founded") [class*="value"]') ||
                     extractText('dt:contains("Founded") + dd') ||
-                    extractText('[class*="founded"]') ||
-                    (() => {
+                    extractText('[class*="founded"]');
+
+                if (rawFounded) {
+                    const yearMatch = rawFounded.match(/\d{4}/);
+                    companyDetails.companyFounded = yearMatch ? yearMatch[0] : null;
+                } else {
+                    companyDetails.companyFounded = (() => {
                         let found: string | null = null;
                         $('li, tr').each((_, el) => {
                             const text = $(el).text().trim();
@@ -609,6 +619,7 @@ const crawler = new CheerioCrawler({
                         });
                         return found;
                     })();
+                }
             }
 
             // Addresses / HQ
@@ -661,6 +672,7 @@ const crawler = new CheerioCrawler({
                         href.startsWith('http') &&
                         !href.includes('indeed.com') &&
                         !href.includes('google.com') &&
+                        !href.includes('indeed.jobs') &&
                         !href.match(/linkedin|twitter|facebook|x\.com|youtube|instagram/i)
                     ) {
                         companyDetails.companyLinks.corporateWebsite = href;
@@ -679,7 +691,13 @@ const crawler = new CheerioCrawler({
                 companyNumEmployees: companyDetails.companyNumEmployees,
                 companyRevenue: companyDetails.companyRevenue,
                 companyFounded: companyDetails.companyFounded,
-                corporateWebsite: companyDetails.companyLinks.corporateWebsite,
+                corporateWebsite: (() => {
+                    const ws = companyDetails.companyLinks.corporateWebsite;
+                    if (!ws) return null;
+                    const lowws = ws.toLowerCase();
+                    if (lowws.includes('indeed') && (lowws.includes('.jobs') || lowws.includes('events') || lowws.includes('branding') || lowws.includes('design') || lowws.includes('share') || lowws.includes('hiring'))) return null;
+                    return ws;
+                })(),
                 companyPhones: mobileMatches,
                 companyEmails: companyEmails,
                 companyHeaderUrl: companyDetails.companyHeaderUrl || sampleJobData.companyHeaderUrl,
@@ -837,7 +855,11 @@ const crawler = new CheerioCrawler({
                     for (const job of jobs) {
                         if (totalSavedItems >= maxItems) break;
                         const jobKey = job.jobkey || job.jk || job.jobKey;
-                        if (!jobKey || seenKeys.has(jobKey)) continue;
+                        if (!jobKey) continue;
+                        if (seenKeys.has(jobKey)) {
+                            totalDuplicatesSkipped++;
+                            continue;
+                        }
 
                         seenKeys.add(jobKey);
                         newJobsOnPage++;
@@ -1190,7 +1212,10 @@ const crawler = new CheerioCrawler({
                     const fullLink = rawLink.startsWith('http') ? rawLink : `${baseUrl}${rawLink}`;
                     const jobKey = fullLink.match(/jk=([a-zA-Z0-9]+)/)?.[1] || fullLink;
 
-                    if (seenKeys.has(jobKey)) continue;
+                    if (seenKeys.has(jobKey)) {
+                        totalDuplicatesSkipped++;
+                        continue;
+                    }
 
                     const jobTitle = card.find('.jobTitle span[title]').text().trim() ||
                         card.find('.jobTitle').text().trim();
@@ -1415,7 +1440,7 @@ const crawler = new CheerioCrawler({
 
 
 
-        log.info(`Progress: ${totalSavedItems}/${maxItems} unique jobs collected.`);
+        log.info(`Progress: ${totalSavedItems}/${maxItems} unique jobs collected. (Skipped ${totalDuplicatesSkipped} duplicates so far)`);
 
         let nextDuplicateCount = duplicateCount;
         if (totalFoundOnPage > 0 && newJobsOnPage === 0) {
@@ -1470,7 +1495,9 @@ try {
     log.error('Crawler failed:', { err });
 }
 
-log.info(`[SUMMARY] Finished. Total jobs pushed: ${totalJobsScraped}.`);
+log.info(`[SUMMARY] Finished. Total unique jobs collected: ${totalSavedItems}.`);
+log.info(`[SUMMARY] Total jobs pushed to dataset: ${totalJobsScraped}.`);
+log.info(`[SUMMARY] Total duplicate jobs skipped: ${totalDuplicatesSkipped}.`);
 log.info(`[INFO] Jobs with merged company details: ${totalJobsWithMetadata}.`);
 if (totalJobsScraped > totalJobsWithMetadata) {
     log.info(`[INFO] Jobs with only basic details (meta-scraping failed/skipped): ${totalJobsScraped - totalJobsWithMetadata}.`);
