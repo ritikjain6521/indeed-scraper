@@ -42,8 +42,32 @@
             "editor": "stringList",
             "default": []
         },
+        "countries": {
+            "title": "Countries",
+            "type": "array",
+            "description": "Select multiple countries to search in. If provided, this overrides the single 'Country' field.",
+            "editor": "select",
+            "default": [],
+            "items": {
+                "type": "string",
+                "enum": [
+                    "US",
+                    "IN",
+                    "GB",
+                    "CA",
+                    "AU"
+                ],
+                "enumTitles": [
+                    "United States",
+                    "India",
+                    "United Kingdom",
+                    "Canada",
+                    "Australia"
+                ]
+            }
+        },
         "country": {
-            "title": "Country",
+            "title": "Country (Legacy)",
             "type": "string",
             "description": "Country to search in (e.g., US, IN, UK)",
             "editor": "select",
@@ -67,7 +91,7 @@
             "title": "Max Items",
             "type": "integer",
             "description": "Maximum number of items to scrape",
-            "default": 1000,
+            "default": 100,
             "minimum": 1
         },
         "maxAge": {

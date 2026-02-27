@@ -15,12 +15,14 @@ import { CheerioCrawler, Dataset, RequestQueue, log } from 'crawlee';
 interface BulkQuery {
     query: string;
     location?: string;
+    country?: string;
 }
 
 interface Input {
     position?: string;
     location?: string;
     country?: string;
+    countries?: string[];
     maxItems?: number;
     bulkQueries?: BulkQuery[];
     startUrls?: { url: string }[];
@@ -85,7 +87,7 @@ if (!position && !input.startUrls?.length && !input.companyUrls?.length && !inpu
     position = 'Software Engineer';
 }
 
-const maxItems = Number(input.maxItems) || 1000;
+const maxItems = Number(input.maxItems) || 100;
 const resetSeenKeys = Boolean(input.resetSeenKeys);
 const maxConcurrency = Number(input.maxConcurrency) || 10;
 const scrapeCompanyDetails = input.scrapeCompanyDetails !== false; // Default to true
@@ -102,8 +104,9 @@ const domains: Record<string, string> = {
     'CA': 'ca.indeed.com',
     'AU': 'au.indeed.com'
 };
-const domain = domains[country] || 'indeed.com';
-const baseUrl = `https://${domain}`;
+
+const getCountryDomain = (countryCode: string) => domains[countryCode.toUpperCase()] || 'indeed.com';
+const getCountryBaseUrl = (countryCode: string) => `https://${getCountryDomain(countryCode)}`;
 
 
 // Global Regions for Deep Search Expansion (supports US, IN, GB/UK, CA, AU)
@@ -164,7 +167,8 @@ const companyCache = new Map<string, any>();
 let enqueuedCount = 0;
 
 // Helper to build URL
-const buildUrl = (q: string, l: string = '', start: number = 0) => {
+const buildUrl = (q: string, l: string = '', start: number = 0, countryCode: string = country) => {
+    const baseUrl = getCountryBaseUrl(countryCode);
     const url = new URL(`${baseUrl}/jobs`);
     url.searchParams.set('q', q);
     if (l) url.searchParams.set('l', l);
@@ -176,32 +180,30 @@ const buildUrl = (q: string, l: string = '', start: number = 0) => {
 };
 
 // Helper to add search with expansion logic
-const enqueueSearch = async (q: string, l: string) => {
-    const url = buildUrl(q, l);
-    const sessionKey = `search-${q}-${l}`;
-    log.info(`Enqueuing search: "${q}" in "${l}"`);
+const enqueueSearch = async (q: string, l: string, countryCode: string = country) => {
+    const url = buildUrl(q, l, 0, countryCode);
+    const sessionKey = `search-${q}-${l}-${countryCode}`;
+    log.info(`Enqueuing search: "${q}" in "${l}" (${countryCode})`);
     await requestQueue.addRequest({
         url,
-        userData: { label: 'START', page: 0, startUrl: url, sessionKey, q, l }
+        userData: { label: 'START', page: 0, startUrl: url, sessionKey, q, l, country: countryCode }
     });
     enqueuedCount++;
 
-    // Global Deep Search Expansion - works for all supported countries
-    // If user wants >1000 jobs and searching "Remote" (broad location), expand into regions
-    // This bypasses the Indeed 1000-job-per-query limit
-    const regions = GLOBAL_REGIONS[country];
+    // Global Deep Search Expansion
+    const regions = GLOBAL_REGIONS[countryCode.toUpperCase()];
     if (regions && l.toLowerCase().includes('remote') && maxItems > 1000) {
-        log.info(`[DEEP SEARCH] Expanding "${q}" into ${regions.length} regions for ${country} to find more unique jobs...`);
+        log.info(`[DEEP SEARCH] Expanding "${q}" into ${regions.length} regions for ${countryCode} to find more unique jobs...`);
 
         // Charge for deep search expansion
         await chargeAndCheck({ eventName: 'deep-search-request', count: 1 });
 
         for (const region of regions) {
-            const regionUrl = buildUrl(q, region);
-            const regionSessionKey = `search-${q}-${region}`;
+            const regionUrl = buildUrl(q, region, 0, countryCode);
+            const regionSessionKey = `search-${q}-${region}-${countryCode}`;
             await requestQueue.addRequest({
                 url: regionUrl,
-                userData: { label: 'START', page: 0, startUrl: regionUrl, sessionKey: regionSessionKey, q, l: region }
+                userData: { label: 'START', page: 0, startUrl: regionUrl, sessionKey: regionSessionKey, q, l: region, country: countryCode }
             });
             enqueuedCount++;
         }
@@ -234,17 +236,24 @@ if (input.companyUrls && Array.isArray(input.companyUrls)) {
     }
 }
 
-// 3. Add primary search
+// 3. Add primary searches (supports multiple countries)
+const countriesToScrape = (input.countries && input.countries.length > 0)
+    ? input.countries
+    : [country];
+
 if (position) {
-    await enqueueSearch(position, location);
+    for (const c of countriesToScrape) {
+        await enqueueSearch(position, location, c);
+    }
 }
 
 // 4. Add company searches
 if (input.companyNames && Array.isArray(input.companyNames)) {
     for (const company of input.companyNames) {
         if (!company) continue;
-        // Search by company name
-        await enqueueSearch(`company:"${company}"`, location);
+        for (const c of countriesToScrape) {
+            await enqueueSearch(`company:"${company}"`, location, c);
+        }
     }
 }
 
@@ -252,7 +261,13 @@ if (input.companyNames && Array.isArray(input.companyNames)) {
 if (input.bulkQueries && Array.isArray(input.bulkQueries)) {
     for (const bq of input.bulkQueries) {
         if (!bq.query) continue;
-        await enqueueSearch(bq.query, bq.location || '');
+        if (bq.country) {
+            await enqueueSearch(bq.query, bq.location || '', bq.country);
+        } else {
+            for (const c of countriesToScrape) {
+                await enqueueSearch(bq.query, bq.location || '', c);
+            }
+        }
     }
 }
 
@@ -269,7 +284,7 @@ const proxyConfiguration = input.proxyUrls?.length
     ? await Actor.createProxyConfiguration({ proxyUrls: input.proxyUrls })
     : await Actor.createProxyConfiguration(input.proxyConfiguration || { groups: ['RESIDENTIAL'] });
 
-log.info(`[INFO] Starting 10K Preset Scraper for "${position}" in "${location}" (${country})`);
+log.info(`[INFO] Starting 10K Preset Scraper for "${position}" in "${location}" (${countriesToScrape.join(', ')})`);
 log.info(`[SETTINGS] maxItems=${maxItems}, maxConcurrency=${maxConcurrency}, proxy=${input.proxyUrls?.length ? 'Custom URL' : (input.proxyConfiguration?.useApifyProxy !== false ? 'Apify Proxy' : 'No Proxy')}`);
 
 const crawler = new CheerioCrawler({
@@ -317,7 +332,7 @@ const crawler = new CheerioCrawler({
 
     // Core Logic
     async requestHandler({ $, request, log, session }) {
-        const { label, page: pageNum = 0, referer, startUrl, sessionKey, duplicateCount = 0, q, l } = request.userData;
+        const { label, page: pageNum = 0, referer, startUrl, sessionKey, duplicateCount = 0, q, l, country: countryCode = country } = request.userData;
 
         if (label === 'COMPANY_DETAIL') {
             const { companyUrl, jobData: sampleJobData } = request.userData;
@@ -932,8 +947,9 @@ const crawler = new CheerioCrawler({
                                 else if (salaryGuide.text.includes('£')) salaryGuide.currency = 'GBP';
                                 else if (salaryGuide.text.includes('€')) salaryGuide.currency = 'EUR';
                                 else {
+                                    const currentDomain = getCountryDomain(countryCode);
                                     const domainCurrencies: Record<string, string> = { 'in.indeed.com': 'INR', 'uk.indeed.com': 'GBP', 'ca.indeed.com': 'CAD', 'au.indeed.com': 'AUD' };
-                                    salaryGuide.currency = domainCurrencies[domain] || 'USD';
+                                    salaryGuide.currency = domainCurrencies[currentDomain] || 'USD';
                                 }
                             }
                         }
@@ -1088,16 +1104,17 @@ const crawler = new CheerioCrawler({
                             job.companyBrandingAttributes?.headerLogoUrl ||
                             job.squareLogoUrl || null;
 
+                        const currentBaseUrl = getCountryBaseUrl(countryCode);
                         const companyUrlVal: string | null = job.companyOverviewLink
-                            ? (job.companyOverviewLink.startsWith('http') ? job.companyOverviewLink : `${baseUrl}${job.companyOverviewLink.startsWith('/') ? '' : '/'}${job.companyOverviewLink}`)
+                            ? (job.companyOverviewLink.startsWith('http') ? job.companyOverviewLink : `${currentBaseUrl}${job.companyOverviewLink.startsWith('/') ? '' : '/'}${job.companyOverviewLink}`)
                             : (job.companyRelativeUrl
-                                ? `${baseUrl}${job.companyRelativeUrl.startsWith('/') ? '' : '/'}${job.companyRelativeUrl}`
-                                : (job.company || job.companyName ? `${baseUrl}/cmp/${(job.company || job.companyName).replace(/\s+/g, '-')}` : null));
+                                ? `${currentBaseUrl}${job.companyRelativeUrl.startsWith('/') ? '' : '/'}${job.companyRelativeUrl}`
+                                : (job.company || job.companyName ? `${currentBaseUrl}/cmp/${(job.company || job.companyName).replace(/\s+/g, '-')}` : null));
 
                         const jobData = {
                             dataType: 'job' as const,
                             jobKey,
-                            jobUrl: `${baseUrl}/viewjob?jk=${jobKey}`,
+                            jobUrl: `${currentBaseUrl}/viewjob?jk=${jobKey}`,
                             jobTitle: job.displayTitle || job.title || 'Unknown Title',
                             companyName: job.companyName || job.company || 'Unknown Company',
                             location: job.formattedLocation || job.jobLocationModel?.formattedLocation || job.location || 'Unknown Location',
@@ -1114,7 +1131,7 @@ const crawler = new CheerioCrawler({
                                 job.hiringInsightsModel?.isPostedToday
                             ),
                             expired: job.expired ?? false,
-                            link: `${baseUrl}/viewjob?jk=${jobKey}`,
+                            link: `${currentBaseUrl}/viewjob?jk=${jobKey}`,
                             applyUrl: job.applyUrl || job.applyLink || job.thirdPartyApplyUrl || null,
                             jobType: jobTypeVal,
                             isRemote: !!(
@@ -1210,7 +1227,8 @@ const crawler = new CheerioCrawler({
                     const rawLink = card.find('h2.jobTitle a').attr('href') || '';
                     if (!rawLink) continue;
 
-                    const fullLink = rawLink.startsWith('http') ? rawLink : `${baseUrl}${rawLink}`;
+                    const currentBaseUrl = getCountryBaseUrl(countryCode);
+                    const fullLink = rawLink.startsWith('http') ? rawLink : `${currentBaseUrl}${rawLink}`;
                     const jobKey = fullLink.match(/jk=([a-zA-Z0-9]+)/)?.[1] || fullLink;
 
                     if (seenKeys.has(jobKey)) {
@@ -1336,7 +1354,7 @@ const crawler = new CheerioCrawler({
                     const companyUrlHtml = card.find('a[data-testid="company-name"]').attr('href') ||
                         card.find('.companyName a').attr('href') ||
                         (company ? `/cmp/${company.replace(/\s+/g, '-')}` : null);
-                    const fullCompanyUrlHtml = companyUrlHtml ? (companyUrlHtml.startsWith('http') ? companyUrlHtml : `${baseUrl}${companyUrlHtml.startsWith('/') ? '' : '/'}${companyUrlHtml}`) : null;
+                    const fullCompanyUrlHtml = companyUrlHtml ? (companyUrlHtml.startsWith('http') ? companyUrlHtml : `${currentBaseUrl}${companyUrlHtml.startsWith('/') ? '' : '/'}${companyUrlHtml}`) : null;
 
                     const descEmailsHtml = snippetText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
                     const descPhonesHtml = snippetText.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || [];

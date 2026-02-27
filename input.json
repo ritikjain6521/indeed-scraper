@@ -1,0 +1,14 @@
+{
+    "position": "Software Engineer",
+    "location": "New York",
+    "country": "US",
+    "maxItems": 100,
+    "scrapeCompanyDetails": true,
+    "maxConcurrency": 10,
+    "proxyConfiguration": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+            "RESIDENTIAL"
+        ]
+    }
+}
