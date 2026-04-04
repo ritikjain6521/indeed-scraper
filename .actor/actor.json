@@ -17,6 +17,6 @@
 		"payPerEvent": "./pay_per_event.json"
 	},
 	"storages": {
-		"dataset": "./dataset_schema.json"
+		"dataset": "./output_schema.json"
 	}
 }

@@ -36,15 +36,29 @@ interface Input {
     maxCompanyPages?: number;
     maxAge?: number;
     jobType?: string;
+    companySizes?: string[];
 }
 
 await Actor.init();
 
-// Monetization counters
-let totalJobsScraped = 0;
-let totalCompaniesScraped = 0;
-let totalJobsWithMetadata = 0;
-let totalDuplicatesSkipped = 0;
+// Monetization & usage counters
+const state = await Actor.useState('SCRAPER_STATE', { 
+    totalJobsScraped: 0,
+    totalCompaniesScraped: 0,
+    totalJobsWithMetadata: 0,
+    totalDuplicatesSkipped: 0,
+    totalBandwidthBytes: 0,
+    totalSavedItems: 0
+});
+
+// Bandwidth formatter
+const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+};
 
 // Credit check helper
 const chargeAndCheck = async (options: { eventName: string, count: number }) => {
@@ -94,6 +108,63 @@ const scrapeCompanyDetails = input.scrapeCompanyDetails !== false; // Default to
 const maxCompanyPages = Number(input.maxCompanyPages) || 0;
 const maxAge = Number(input.maxAge) || null;
 const jobType = input.jobType || '';
+const companySizes: string[] = Array.isArray(input.companySizes) ? input.companySizes : [];
+
+// ── Company Size Filter ──────────────────────────────────────────────────────
+// Each bucket defines the label used in input and a numeric [min, max] employee range.
+// The scraper parses the companyNumEmployees string from the company profile page
+// and checks it falls within at least one of the selected buckets.
+const SIZE_BUCKETS: Record<string, [number, number]> = {
+    'self-employed': [1, 1],
+    '1-10': [1, 10],
+    '11-50': [11, 50],
+    '51-200': [51, 200],
+    '201-500': [201, 500],
+    '501-1000': [501, 1000],
+    '1001-5000': [1001, 5000],
+    '5001-10000': [5001, 10000],
+    '10001+': [10001, Infinity],
+};
+
+/**
+ * Parse a free-text employee count string such as:
+ *   "51 to 200 employees", "10,001+", "501-1,000", "1001 to 5000"
+ * Returns the lower bound as a number, or null if unparseable.
+ */
+const parseEmployeeCount = (raw: string | null | undefined): number | null => {
+    if (!raw) return null;
+    const clean = raw.replace(/,/g, '').replace(/employees?|staff|people/gi, '').trim();
+    // Handle "X+" or "X+" style (e.g. "10001+", "10,001+")
+    const plusMatch = clean.match(/(\d+)\+/);
+    if (plusMatch) return parseInt(plusMatch[1], 10);
+    // Handle range "X-Y", "X to Y"
+    const rangeMatch = clean.match(/(\d+)\s*(?:-|to)\s*(\d+)/);
+    if (rangeMatch) return parseInt(rangeMatch[1], 10);
+    // Single number
+    const singleMatch = clean.match(/(\d+)/);
+    if (singleMatch) return parseInt(singleMatch[1], 10);
+    return null;
+};
+
+/**
+ * Returns true if the job's company size matches any selected bucket,
+ * or if no buckets are selected (filter is off), or if size info is unavailable.
+ */
+const matchesCompanySize = (numEmployees: string | null | undefined): boolean => {
+    if (companySizes.length === 0) return true;   // filter is OFF
+    if (!numEmployees) return true;               // unknown size → pass through
+    const count = parseEmployeeCount(numEmployees);
+    if (count === null) return true;              // unparseable → pass through
+    return companySizes.some(bucket => {
+        const range = SIZE_BUCKETS[bucket];
+        if (!range) return false;
+        return count >= range[0] && count <= range[1];
+    });
+};
+
+if (companySizes.length > 0) {
+    log.info(`[FILTER] Company size filter active: ${companySizes.join(', ')}`);
+}
 
 // Domain mapping
 const domains: Record<string, string> = {
@@ -158,12 +229,22 @@ if (resetSeenKeys) {
 
 const seenKeys = new Set<string>(persistentKeys);
 const seenCompanies = new Set<string>(); // Used to deduplicate enqueuing COMPANY_DETAIL
-let totalSavedItems = 0;
-
 const requestQueue = await RequestQueue.open();
 // Buffer for jobs waiting for company details
 const pendingJobs = new Map<string, any[]>();
+
+// Bounded LRU-style company cache.
+const COMPANY_CACHE_MAX = 20000;
 const companyCache = new Map<string, any>();
+const companyCacheSet = (key: string, value: any) => {
+    if (companyCache.size >= COMPANY_CACHE_MAX) {
+        // Map preserves insertion order — first key is the oldest
+        const oldestKey = companyCache.keys().next().value;
+        companyCache.delete(oldestKey!);
+        seenCompanies.delete(oldestKey!); // Allow re-enqueue if needed again later
+    }
+    companyCache.set(key, value);
+};
 let enqueuedCount = 0;
 
 // Helper to build URL
@@ -183,7 +264,7 @@ const buildUrl = (q: string, l: string = '', start: number = 0, countryCode: str
 const enqueueSearch = async (q: string, l: string, countryCode: string = country) => {
     const url = buildUrl(q, l, 0, countryCode);
     const sessionKey = `search-${q}-${l}-${countryCode}`;
-    log.info(`Enqueuing search: "${q}" in "${l}" (${countryCode})`);
+    log.info(`[SEARCH] Queuing: "${q}" | location: "${l || 'Any'}" | country: ${countryCode}`);
     await requestQueue.addRequest({
         url,
         userData: { label: 'START', page: 0, startUrl: url, sessionKey, q, l, country: countryCode }
@@ -193,7 +274,7 @@ const enqueueSearch = async (q: string, l: string, countryCode: string = country
     // Global Deep Search Expansion
     const regions = GLOBAL_REGIONS[countryCode.toUpperCase()];
     if (regions && l.toLowerCase().includes('remote') && maxItems > 1000) {
-        log.info(`[DEEP SEARCH] Expanding "${q}" into ${regions.length} regions for ${countryCode} to find more unique jobs...`);
+        log.info(`[DEEP SEARCH] Expanding "${q}" into ${regions.length} regions for ${countryCode}...`)
 
         // Charge for deep search expansion
         await chargeAndCheck({ eventName: 'deep-search-request', count: 1 });
@@ -207,6 +288,7 @@ const enqueueSearch = async (q: string, l: string, countryCode: string = country
             });
             enqueuedCount++;
         }
+        log.info(`[DEEP SEARCH] Enqueued ${regions.length} region searches for "${q}" (${countryCode}).`);
     }
 };
 
@@ -322,16 +404,54 @@ const crawler = new CheerioCrawler({
         },
     ],
     postNavigationHooks: [
-        async ({ response, session, log }) => {
-            if (response && response.statusCode === 403) {
-                log.warning(`Proactively retiring session due to 403 on ${response.url}`);
-                session?.retire();
+        async ({ request, response, body, session, log, proxyInfo }) => {
+            if (response) {
+                // Tracking total bandwidth (body length)
+                // Use a prioritizied list of body sources: rawBody (Buffer), body (string/Buffer), or response.body
+                const bodyContent = (response as any).rawBody || body || (response as any).body;
+                
+                let trackedSize = 0;
+                if (bodyContent) {
+                    trackedSize = typeof bodyContent === 'string' ? Buffer.byteLength(bodyContent) : (bodyContent.length || 0);
+                }
+                
+                // Fallback to content-length header if body is missing or 0 in hook
+                const contentLength = response.headers['content-length'];
+                if (trackedSize === 0 && contentLength) {
+                    trackedSize = parseInt(contentLength as string, 10);
+                }
+                
+                // Also account for header size (rough estimate: ~1KB per request)
+                trackedSize += 1024;
+                
+                state.totalBandwidthBytes += (trackedSize || 0);
+                request.userData.bandwidthTracked = true;
+                
+                // Detailed logging for bandwidth tracking
+                if (trackedSize > 1024) { // Only log if we found actual content besides header estimate
+                    log.info(`[BANDWIDTH] Received ${formatBytes(trackedSize)} from ${request.url} (Total usage: ${formatBytes(state.totalBandwidthBytes)})`);
+                }
+
+                if (response.statusCode === 403) {
+                    log.warning(`Proactively retiring session due to 403 on ${response.url}`);
+                    session?.retire();
+                }
+
+                if (Actor.isAtHome() && proxyInfo && proxyInfo.url.includes('apify.com')) {
+                    // Log proxy usage occasionally or in debug mode
+                }
             }
         },
     ],
 
     // Core Logic
-    async requestHandler({ $, request, log, session }) {
+    async requestHandler({ $, request, log, session, body }) {
+        // Double-track bandwidth if hook missed it
+        if (body && !request.userData.bandwidthTracked) {
+            const bodyLength = typeof body === 'string' ? Buffer.byteLength(body) : ((body as any)?.length || 0);
+            state.totalBandwidthBytes += (bodyLength + 1024); // Account for body + estimated headers
+            request.userData.bandwidthTracked = true;
+        }
         const { label, page: pageNum = 0, referer, startUrl, sessionKey, duplicateCount = 0, q, l, country: countryCode = country } = request.userData;
 
         if (label === 'COMPANY_DETAIL') {
@@ -721,37 +841,37 @@ const crawler = new CheerioCrawler({
                 companyScrapedAt: scrapedAt,
             };
 
-            // Cache for future jobs of the same company
-            companyCache.set(companyUrl, companyInfo);
+            // Cache for future jobs of the same company (bounded LRU — auto-evicts oldest when full)
+            companyCacheSet(companyUrl, companyInfo);
 
-            // Push all pending jobs for this company
+            // Push all pending jobs for this company (apply company size filter)
             const jobsWaiting = pendingJobs.get(companyUrl);
             if (jobsWaiting && jobsWaiting.length > 0) {
-                log.info(`Pushing ${jobsWaiting.length} jobs for ${sampleJobData.companyName} with merged company details.`);
-                const finalJobs = jobsWaiting.map(j => ({
+                const mergedJobs = jobsWaiting.map(j => ({
                     ...j,
                     ...companyInfo,
-                    // Merge job-level and company-level contacts
-                    emails: Array.from(new Set([...(j.emails || []), ...companyEmails])),
-                    phones: Array.from(new Set([...(j.phones || []), ...mobileMatches]))
+                    emails: [...companyEmails, ...(j.emails || [])].length > 0 ? Array.from(new Set([...companyEmails, ...(j.emails || [])])) : null,
+                    phones: [...mobileMatches, ...(j.phones || [])].length > 0 ? Array.from(new Set([...mobileMatches, ...(j.phones || [])])) : null
                 }));
-                await Dataset.pushData(finalJobs);
-                totalJobsScraped += finalJobs.length;
-                totalJobsWithMetadata += finalJobs.length;
+                const finalJobs = mergedJobs.filter(j => matchesCompanySize(j.companyNumEmployees));
+                const filteredOut = mergedJobs.length - finalJobs.length;
+                if (filteredOut > 0) {
+                    log.info(`[SIZE FILTER] Skipped ${filteredOut}/${mergedJobs.length} jobs for ${sampleJobData.companyName} (size: ${companyInfo.companyNumEmployees ?? 'unknown'}).`);
+                    await chargeAndCheck({ eventName: 'job-size-filtered', count: filteredOut });
+                }
+                if (finalJobs.length > 0) {
+                    log.info(`Pushing ${finalJobs.length} jobs for ${sampleJobData.companyName} with merged company details.`);
+                    await Dataset.pushData(finalJobs);
+                    state.totalJobsScraped += finalJobs.length;
+                    state.totalJobsWithMetadata += finalJobs.length;
+                    // Charge as Premium for merged jobs
+                    await chargeAndCheck({ eventName: 'job-premium-scraped', count: finalJobs.length });
+                }
                 pendingJobs.delete(companyUrl);
-
-                // Charge as Premium for merged jobs
-                await chargeAndCheck({ eventName: 'job-premium-scraped', count: finalJobs.length });
             }
 
-            totalCompaniesScraped++;
+            state.totalCompaniesScraped++;
             return;
-        }
-
-        // Diagnostic: Log session status
-        if (pageNum > 0) {
-            const hasCookies = (session?.getCookieString(request.url)?.length ?? 0) > 0;
-            log.info(`Page ${pageNum + 1} session check: ${hasCookies ? 'Has Cookies' : 'NO COOKIES'}`);
         }
 
         // Ensure session consistency for pagination
@@ -761,7 +881,6 @@ const crawler = new CheerioCrawler({
 
         // Randomized delay to mimic human behavior (3-9 seconds)
         const delay = Math.floor(Math.random() * 6000) + 3000;
-        log.info(`Waiting ${delay}ms before processing ${request.url} (Page ${pageNum + 1})`);
         await new Promise(res => setTimeout(res, delay));
 
         // Detection of blocking or walls
@@ -809,7 +928,7 @@ const crawler = new CheerioCrawler({
         // companyHeaderUrl, rating, hiringDemand, etc.
         // HTML card extraction is a last-resort fallback with very limited data.
         // ─────────────────────────────────────────────────────────────────────
-        log.info('Attempting Mosaic JSON extraction (primary path)...');
+
 
         const mosaicScriptSources = [
             'window.mosaic.providerData["mosaic-provider-jobcards"]',
@@ -829,7 +948,6 @@ const crawler = new CheerioCrawler({
                 for (const src of mosaicScriptSources) {
                     if (!scriptText.includes(src)) continue;
 
-                    log.info(`Found Mosaic candidate script: "${src}"`);
 
                     // For the main mosaic provider, extract exactly its assignment value.
                     // For others, try to grab the largest JSON-like object.
@@ -865,21 +983,21 @@ const crawler = new CheerioCrawler({
 
                     mosaicExtracted = true;
                     totalFoundOnPage = jobs.length;
-                    log.info(`✅ Mosaic JSON extracted ${jobs.length} jobs from "${src}".`);
+                    log.info(`[PAGE ${pageNum + 1}] Mosaic JSON: found ${jobs.length} jobs.`);
 
                     for (const job of jobs) {
-                        if (totalSavedItems >= maxItems) break;
+                        if (state.totalSavedItems >= maxItems) break;
                         const jobKey = job.jobkey || job.jk || job.jobKey;
                         if (!jobKey) continue;
                         if (seenKeys.has(jobKey)) {
-                            totalDuplicatesSkipped++;
+                            state.totalDuplicatesSkipped++;
                             await chargeAndCheck({ eventName: 'job-skipped-duplicate', count: 1 });
                             continue;
                         }
 
                         seenKeys.add(jobKey);
                         newJobsOnPage++;
-                        totalSavedItems++;
+                        state.totalSavedItems++;
 
                         // ── Taxonomy attributes (used for multiple fields below) ──
                         const taxAttrs: any[] = job.taxonomyAttributes || job.jobMosaicAttributes?.categoryAttributes || [];
@@ -998,12 +1116,18 @@ const crawler = new CheerioCrawler({
                         // ── Shift and schedule — from taxonomy ──
                         const scheduleFromTax = getTaxValues('schedules');
                         const shiftsFromTax = getTaxValues('shifts');
-                        const shiftAndScheduleVal: string | null =
+                        let shiftAndScheduleVal: string | null =
                             job.shiftAndSchedule ||
                             job.shiftAndScheduleModel?.shiftAndScheduleText ||
                             (scheduleFromTax.length > 0 ? scheduleFromTax.join(', ') : null) ||
                             (shiftsFromTax.length > 0 ? shiftsFromTax.join(', ') : null) ||
                             null;
+
+                        if (!shiftAndScheduleVal) {
+                            const shiftKeywords = ['Monday to Friday', 'Day shift', 'Night shift', 'Weekend availability', 'Weekends only', 'Flexible shift', '8 hour shift', '10 hour shift', '12 hour shift', 'Evening shift'];
+                            const matchedShifts = shiftKeywords.filter(s => new RegExp(`\\b${s}\\b`, 'i').test(rawDesc || ''));
+                            if (matchedShifts.length > 0) shiftAndScheduleVal = matchedShifts.join(', ');
+                        }
 
                         // ── Working system — from taxonomy or direct field ──
                         const workingSystemVal: string | null =
@@ -1065,10 +1189,17 @@ const crawler = new CheerioCrawler({
                             job.jobLocationModel?.countryCode || null;
 
                         // ── numOfCandidates ──
-                        const numCandidates: number | null =
+                        let numCandidates: number | null =
                             job.numOfCandidates ?? job.candidateCount ??
                             job.hiringInsights?.numApplicants ?? job.hiringInsightsModel?.numOfCandidates ??
                             (job.hiringInsights?.hiringMultipleCandidates ? 2 : null);
+
+                        if (numCandidates === null) {
+                            const candidatesMatch = (job.jobDescriptionText || job.snippet || '').match(/hiring\s+(\d+)\s+candidates?/i) || (job.jobDescriptionText || job.snippet || '').match(/(\d+)\s+openings/i);
+                            if (candidatesMatch && candidatesMatch[1]) {
+                                numCandidates = parseInt(candidatesMatch[1], 10);
+                            }
+                        }
 
                         // ── Requirements — direct or formatted ──
                         const edu = getTaxValues('education');
@@ -1152,8 +1283,8 @@ const crawler = new CheerioCrawler({
                             companyHeaderUrl: companyHeaderUrlVal,
                             rating: ratingVal,
                             hiringDemand,
-                            emails: Array.from(new Set([...emailMatches, ...descEmails])),
-                            phones: Array.from(new Set([...phoneMatches, ...validatedDescPhones])),
+                            emails: [...emailMatches, ...descEmails].length > 0 ? Array.from(new Set([...emailMatches, ...descEmails])) : null,
+                            phones: [...phoneMatches, ...validatedDescPhones].length > 0 ? Array.from(new Set([...phoneMatches, ...validatedDescPhones])) : null,
                             requirements: requirementsVal || null,
                             numOfCandidates: numCandidates,
                             locale: localeVal || country,
@@ -1161,20 +1292,22 @@ const crawler = new CheerioCrawler({
 
                         if (scrapeCompanyDetails && companyUrlVal) {
                             if (companyCache.has(companyUrlVal)) {
-                                // Already cached, merge and push now
+                                // Already cached — apply size filter then push
                                 const companyInfo = companyCache.get(companyUrlVal);
                                 const fullJob = {
                                     ...jobData,
                                     ...companyInfo,
-                                    // Also merge company-level contacts into job fields
-                                    emails: Array.from(new Set([...(jobData.emails || []), ...(companyInfo.companyEmails || [])])),
-                                    phones: Array.from(new Set([...(jobData.phones || []), ...(companyInfo.companyPhones || [])]))
+                                    emails: [...(companyInfo.companyEmails || []), ...(jobData.emails || [])].length > 0 ? Array.from(new Set([...(companyInfo.companyEmails || []), ...(jobData.emails || [])])) : null,
+                                    phones: [...(companyInfo.companyPhones || []), ...(jobData.phones || [])].length > 0 ? Array.from(new Set([...(companyInfo.companyPhones || []), ...(jobData.phones || [])])) : null
                                 };
-                                await Dataset.pushData(fullJob);
-                                totalJobsScraped++;
-                                totalJobsWithMetadata++;
-                                // Charge as Premium
-                                await chargeAndCheck({ eventName: 'job-premium-scraped', count: 1 });
+                                if (matchesCompanySize(fullJob.companyNumEmployees)) {
+                                    await Dataset.pushData(fullJob);
+                                    state.totalJobsScraped++;
+                                    state.totalJobsWithMetadata++;
+                                    await chargeAndCheck({ eventName: 'job-premium-scraped', count: 1 });
+                                } else {
+                                    await chargeAndCheck({ eventName: 'job-size-filtered', count: 1 });
+                                }
                             } else {
                                 // Buffer job and enqueue company detail if not already seen
                                 if (!pendingJobs.has(companyUrlVal)) {
@@ -1186,16 +1319,15 @@ const crawler = new CheerioCrawler({
                                     seenCompanies.add(companyUrlVal);
                                     await requestQueue.addRequest({
                                         url: companyUrlVal,
-                                        uniqueKey: companyUrlVal,
+                                        uniqueKey: `${companyUrlVal}-${Date.now()}-${Math.random()}`,
                                         userData: { label: 'COMPANY_DETAIL', companyUrl: companyUrlVal, jobData },
                                     });
                                 }
                             }
                         } else {
-                            // No company details requested, push immediately
+                            // No company details — size filter not applicable, push immediately
                             await Dataset.pushData(jobData);
-                            totalJobsScraped++;
-                            // Charge as Standard
+                            state.totalJobsScraped++;
                             await chargeAndCheck({ eventName: 'job-standard-scraped', count: 1 });
                         }
 
@@ -1212,15 +1344,12 @@ const crawler = new CheerioCrawler({
         // FALLBACK: HTML card extraction — only runs if Mosaic JSON failed.
         // ─────────────────────────────────────────────────────────────────────
         if (!mosaicExtracted) {
-            log.info('Mosaic JSON not found — falling back to HTML card extraction.');
-            if (jobCards.length === 0) {
-                log.info(`HTML Head Snippet: ${$.html().substring(0, 800).replace(/\s+/g, ' ')}`);
-            }
+            log.warning(`[PAGE ${pageNum + 1}] Mosaic JSON not found — falling back to HTML card extraction (${jobCards.length} cards).`);
         }
 
         if (!mosaicExtracted && newJobsOnPage === 0) {
             for (const element of jobCards.toArray()) {
-                if (totalSavedItems >= maxItems) break;
+                if (state.totalSavedItems >= maxItems) break;
 
                 try {
                     const card = $(element);
@@ -1232,7 +1361,7 @@ const crawler = new CheerioCrawler({
                     const jobKey = fullLink.match(/jk=([a-zA-Z0-9]+)/)?.[1] || fullLink;
 
                     if (seenKeys.has(jobKey)) {
-                        totalDuplicatesSkipped++;
+                        state.totalDuplicatesSkipped++;
                         await chargeAndCheck({ eventName: 'job-skipped-duplicate', count: 1 });
                         continue;
                     }
@@ -1281,7 +1410,7 @@ const crawler = new CheerioCrawler({
 
                     seenKeys.add(jobKey);
                     newJobsOnPage++;
-                    totalSavedItems++;
+                    state.totalSavedItems++;
 
                     // ── Urgency / volume badges from HTML card ──
                     const isUrgentHire = /urgently\s*hiring/i.test(card.text());
@@ -1392,8 +1521,8 @@ const crawler = new CheerioCrawler({
                         hiringDemand: { isUrgentHire, isHighVolumeHiring },
                         pageNumber: pageNum + 1,
                         source: 'html',
-                        emails: Array.from(new Set([...emailMatches, ...descEmailsHtml])),
-                        phones: Array.from(new Set([...phoneMatches, ...validatedDescPhonesHtml])),
+                        emails: [...emailMatches, ...descEmailsHtml].length > 0 ? Array.from(new Set([...emailMatches, ...descEmailsHtml])) : null,
+                        phones: [...phoneMatches, ...validatedDescPhonesHtml].length > 0 ? Array.from(new Set([...phoneMatches, ...validatedDescPhonesHtml])) : null,
                         requirements: guessedReqs || null,
                         numOfCandidates: null,
                         locale: country,
@@ -1406,12 +1535,12 @@ const crawler = new CheerioCrawler({
                                 ...jobData,
                                 ...companyInfo,
                                 // Also merge company-level contacts into job fields
-                                emails: Array.from(new Set([...(jobData.emails || []), ...(companyInfo.companyEmails || [])])),
-                                phones: Array.from(new Set([...(jobData.phones || []), ...(companyInfo.companyPhones || [])]))
+                                emails: [...(companyInfo.companyEmails || []), ...(jobData.emails || [])].length > 0 ? Array.from(new Set([...(companyInfo.companyEmails || []), ...(jobData.emails || [])])) : null,
+                                phones: [...(companyInfo.companyPhones || []), ...(jobData.phones || [])].length > 0 ? Array.from(new Set([...(companyInfo.companyPhones || []), ...(jobData.phones || [])])) : null
                             };
                             await Dataset.pushData(fullJob);
-                            totalJobsScraped++;
-                            totalJobsWithMetadata++;
+                            state.totalJobsScraped++;
+                            state.totalJobsWithMetadata++;
                             // Charge as Premium
                             await chargeAndCheck({ eventName: 'job-premium-scraped', count: 1 });
                         } else {
@@ -1424,14 +1553,14 @@ const crawler = new CheerioCrawler({
                                 seenCompanies.add(fullCompanyUrlHtml);
                                 await requestQueue.addRequest({
                                     url: fullCompanyUrlHtml,
-                                    uniqueKey: fullCompanyUrlHtml,
+                                    uniqueKey: `${fullCompanyUrlHtml}-${Date.now()}-${Math.random()}`,
                                     userData: { label: 'COMPANY_DETAIL', companyUrl: fullCompanyUrlHtml, jobData },
                                 });
                             }
                         }
                     } else {
                         await Dataset.pushData(jobData);
-                        totalJobsScraped++;
+                        state.totalJobsScraped++;
                         // Charge as Standard (No metadata found/requested)
                         await chargeAndCheck({ eventName: 'job-standard-scraped', count: 1 });
                     }
@@ -1460,7 +1589,7 @@ const crawler = new CheerioCrawler({
 
 
 
-        log.info(`Progress: ${totalSavedItems}/${maxItems} unique jobs collected. (Skipped ${totalDuplicatesSkipped} duplicates so far)`);
+        log.info(`Progress: ${state.totalSavedItems}/${maxItems} unique jobs collected. (Skipped ${state.totalDuplicatesSkipped} duplicates) | Proxy usage: ${formatBytes(state.totalBandwidthBytes)}`);
 
         let nextDuplicateCount = duplicateCount;
         if (totalFoundOnPage > 0 && newJobsOnPage === 0) {
@@ -1477,7 +1606,7 @@ const crawler = new CheerioCrawler({
 
         if (nextDuplicateCount >= 10) return;
 
-        if (totalSavedItems < maxItems && (totalFoundOnPage > 0 || pageNum < 5) && pageNum < 100) {
+        if (state.totalSavedItems < maxItems && (totalFoundOnPage > 0 || pageNum < 5) && pageNum < 100) {
             const nextStart = (pageNum + 1) * 10;
             const nextUrlObj = new URL(startUrl);
             nextUrlObj.searchParams.set('start', nextStart.toString());
@@ -1515,18 +1644,21 @@ try {
     log.error('Crawler failed:', { err });
 }
 
-log.info(`[SUMMARY] Finished. Total unique jobs collected: ${totalSavedItems}.`);
-log.info(`[SUMMARY] Total jobs pushed to dataset: ${totalJobsScraped}.`);
-log.info(`[SUMMARY] Total duplicate jobs skipped: ${totalDuplicatesSkipped}.`);
-log.info(`[INFO] Jobs with merged company details: ${totalJobsWithMetadata}.`);
-if (totalJobsScraped > totalJobsWithMetadata) {
-    log.info(`[INFO] Jobs with only basic details (meta-scraping failed/skipped): ${totalJobsScraped - totalJobsWithMetadata}.`);
+log.info(`[SUMMARY] Finished. Total unique jobs collected: ${state.totalSavedItems}.`);
+log.info(`[SUMMARY] Total jobs pushed to dataset: ${state.totalJobsScraped}.`);
+log.info(`[SUMMARY] Total duplicate jobs skipped: ${state.totalDuplicatesSkipped}.`);
+log.info(`[SUMMARY] Total proxy bandwidth usage: ${formatBytes(state.totalBandwidthBytes)}.`);
+log.info(`[SUMMARY] Proxy configuration: ${input.proxyUrls?.length ? 'Custom URL List' : (input.proxyConfiguration?.useApifyProxy !== false ? 'Apify Proxy (RESIDENTIAL)' : 'No Proxy')}`);
+log.info(`[INFO] Jobs with merged company details: ${state.totalJobsWithMetadata}.`);
+if (state.totalJobsScraped > state.totalJobsWithMetadata) {
+    log.info(`[INFO] Jobs with only basic details (meta-scraping failed/skipped): ${state.totalJobsScraped - state.totalJobsWithMetadata}.`);
 }
 
 // Persist results and state
 await Actor.setValue('SEEN_KEYS', Array.from(seenKeys));
 
 // Cleanup: Push any jobs that were waiting for companies that failed or timed out
+// Size filter is not applied here since company details were not fetched.
 if (pendingJobs.size > 0) {
     const remainingJobs: any[] = [];
     for (const jobs of pendingJobs.values()) {
@@ -1535,8 +1667,7 @@ if (pendingJobs.size > 0) {
     if (remainingJobs.length > 0) {
         log.info(`[CLEANUP] Pushing ${remainingJobs.length} jobs that were waiting for metadata (failed/timed out).`);
         await Dataset.pushData(remainingJobs);
-        totalJobsScraped += remainingJobs.length;
-        // Cleanup jobs are pushed without company details, so charge as Standard
+        state.totalJobsScraped += remainingJobs.length;
         await chargeAndCheck({ eventName: 'job-standard-scraped', count: remainingJobs.length });
     }
 }

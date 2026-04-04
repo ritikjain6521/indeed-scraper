@@ -31,8 +31,8 @@
     },
     "scripts": {
         "start": "npm run start:dev",
-        "start:prod": "node dist/main.js",
-        "start:dev": "tsx src/main.ts",
+        "start:prod": "node --max-old-space-size=4096 dist/main.js",
+        "start:dev": "node --max-old-space-size=4096 --import tsx/esm src/main.ts",
         "build": "tsc",
         "lint": "eslint",
         "lint:fix": "eslint --fix",

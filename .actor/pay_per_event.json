@@ -18,5 +18,10 @@
         "eventName": "job-skipped-duplicate",
         "eventTitle": "Duplicate Job Skipped",
         "eventDescription": "Recorded for each job listing that was already scraped and skipped to avoid duplicates."
+    },
+    {
+        "eventName": "job-size-filtered",
+        "eventTitle": "Job Filtered by Company Size",
+        "eventDescription": "Recorded for each job that was excluded because the company's employee count did not match the selected 'companySizes' filter. No charge — tracking only."
     }
 ]
